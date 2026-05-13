@@ -12,7 +12,6 @@ pub enum Direction {
     Out,
 }
 
-#[allow(dead_code)] // used by Task 5 schema/store code
 impl Direction {
     pub(crate) fn as_sql(self) -> &'static str {
         match self {
@@ -43,7 +42,6 @@ pub enum ChatKind {
     Channel,
 }
 
-#[allow(dead_code)] // used by Task 5 schema/store code
 impl ChatKind {
     pub(crate) fn as_sql(self) -> &'static str {
         match self {
