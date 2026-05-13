@@ -2,12 +2,11 @@
 //!
 //! Every type derives `serde::Deserialize` (or `Serialize` for outputs) plus
 //! `schemars::JsonSchema` so the input schema can be generated automatically
-//! by the `schema_obj` helper in `main.rs`. These types are referenced by
-//! the tool registry built in Task 18; they are unused in Task 17.
+//! by the `schema_obj` helper in `main.rs`. Task 18 wires `BotWhoamiInput`
+//! and `ListAliasesInput`; the remaining types land in subsequent tool
+//! tasks.
 
-// Tool dispatch (Task 18) is the consumer of these types; nothing reads them
-// in Task 17.
-#![allow(dead_code, reason = "consumed by tool dispatch added in Task 18")]
+#![allow(dead_code, reason = "remaining tools land in Tasks 19-21")]
 
 use aliases::ChatRef;
 use schemars::JsonSchema;

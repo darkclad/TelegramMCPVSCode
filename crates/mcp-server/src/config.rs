@@ -4,11 +4,6 @@
 //! [`Config`]. Validation rules live in `Config::validate` and run as part
 //! of [`Config::load`].
 
-// The `main.rs` stub in Task 17 does not yet consume these items; Task 18
-// wires `Config::load`, the field accessors, and the resolver helpers into
-// startup and tool dispatch.
-#![allow(dead_code, reason = "consumed by main.rs and tool dispatch in Task 18")]
-
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -26,6 +21,7 @@ pub struct Config {
     pub updater: UpdaterConfig,
     /// Retention policy for stored history.
     #[serde(default)]
+    #[allow(dead_code, reason = "consumed by retention enforcement in a later task")]
     pub retention: RetentionConfig,
     /// Map of alias names to numeric chat ids.
     #[serde(default)]
@@ -94,6 +90,7 @@ fn default_allowed_kinds() -> Vec<String> {
 
 /// `[retention]` section: optional history-pruning policy.
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code, reason = "consumed by retention enforcement in a later task")]
 pub struct RetentionConfig {
     /// Drop messages older than this many days. `None` disables age-based pruning.
     pub max_age_days: Option<u64>,

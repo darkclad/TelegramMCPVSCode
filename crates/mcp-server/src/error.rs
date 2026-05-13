@@ -1,13 +1,9 @@
 //! Mapping helpers from internal domain errors to [`rmcp::Error`].
 //!
-//! Each tool implementation in Task 18 calls these to convert a typed crate
-//! error into the right JSON-RPC error variant for the MCP wire protocol.
-//! Errors that are clearly the caller's fault (bad alias, invalid chat) map
-//! to `invalid_params`; transport and storage failures map to
-//! `internal_error`.
-
-// These helpers are wired in by the tool dispatch added in Task 18.
-#![allow(dead_code, reason = "consumed by tool dispatch added in Task 18")]
+//! Each tool implementation calls these to convert a typed crate error into
+//! the right JSON-RPC error variant for the MCP wire protocol. Errors that
+//! are clearly the caller's fault (bad alias, invalid chat) map to
+//! `invalid_params`; transport and storage failures map to `internal_error`.
 
 use rmcp::Error as McpError;
 
@@ -26,6 +22,7 @@ pub fn client_err_to_mcp(e: &tg_client::TgClientError) -> McpError {
 }
 
 /// Translate a [`history::HistoryError`] into an [`McpError`].
+#[allow(dead_code, reason = "consumed by history tools landing in Tasks 19-21")]
 pub fn history_err_to_mcp(e: &history::HistoryError) -> McpError {
     use history::HistoryError as E;
     let msg = e.to_string();
