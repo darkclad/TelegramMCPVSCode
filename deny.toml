@@ -13,15 +13,39 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "CC0-1.0",
+    # webpki-roots (Mozilla CA bundle, pulled in transitively by reqwest) ships
+    # under CDLA-Permissive-2.0, a permissive OSI-style license maintained by
+    # the Linux Foundation. Safe to allow for a permissive-license project.
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Intra-workspace crates use `{ workspace = true }` which resolves to a path
+# dependency without a version requirement; cargo-deny otherwise flags these
+# as wildcard dependencies. Path deps inside our own workspace are not a
+# supply-chain risk.
+allow-wildcard-paths = true
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # `paste` 1.0.15 (RUSTSEC-2024-0436): author archived the repo. Pulled in
+    # transitively by rmcp v0.2.1 (the MCP framework itself). No safe upgrade
+    # available; functional, no known vulnerability — just an unmaintained
+    # advisory. Revisit when rmcp releases a version that drops `paste`.
+    "RUSTSEC-2024-0436",
+    # `proc-macro-error` 1.0.4 (RUSTSEC-2024-0370): unmaintained, pulled in
+    # transitively by teloxide → aquamarine (build-time only, doc macros).
+    # No safe upgrade available. Revisit when teloxide updates aquamarine or
+    # we drop teloxide.
+    "RUSTSEC-2024-0370",
+    # `rustls-pemfile` 1.0.4 (RUSTSEC-2025-0134): unmaintained, pulled in
+    # transitively by teloxide-core's reqwest 0.11 dependency. No safe
+    # upgrade available. Revisit when teloxide-core bumps to reqwest 0.12.
+    "RUSTSEC-2025-0134",
+]
 
 [sources]
 unknown-registry = "deny"
