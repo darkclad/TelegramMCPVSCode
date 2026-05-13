@@ -236,4 +236,165 @@ impl History {
         })
         .await?
     }
+
+    /// Fetch a page of messages from `chat_id`, newest first.
+    ///
+    /// The optional `before_message_id` and `after_message_id` cursors are
+    /// both **exclusive** — they filter for `message_id < before` and
+    /// `message_id > after` respectively. `limit` caps the page size.
+    #[allow(clippy::too_many_lines)]
+    // reason: SQL builder + row mapper is naturally long; helper extraction obscures the seam between them
+    #[allow(clippy::similar_names)] // *_s suffixes mirror the SQL TEXT columns they decode
+    pub async fn messages(
+        &self,
+        chat_id: i64,
+        before_message_id: Option<i64>,
+        after_message_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<crate::StoredMessage>, HistoryError> {
+        use std::fmt::Write as _;
+        let conn = self.inner.clone();
+        tokio::task::spawn_blocking(
+            move || -> Result<Vec<crate::StoredMessage>, HistoryError> {
+                let guard = conn.blocking_lock();
+                let mut sql = String::from(
+                    "SELECT message_id, date, from_id, from_name, reply_to, text, \
+                            media_kind, media_file_id, media_meta, direction, raw \
+                     FROM messages WHERE chat_id = ?1",
+                );
+                let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(chat_id)];
+                if let Some(before) = before_message_id {
+                    write!(&mut sql, " AND message_id < ?{}", args.len() + 1).unwrap();
+                    args.push(Box::new(before));
+                }
+                if let Some(after) = after_message_id {
+                    write!(&mut sql, " AND message_id > ?{}", args.len() + 1).unwrap();
+                    args.push(Box::new(after));
+                }
+                write!(&mut sql, " ORDER BY message_id DESC LIMIT ?{}", args.len() + 1).unwrap();
+                args.push(Box::new(limit));
+
+                let mut stmt = guard.prepare(&sql)?;
+                let param_refs: Vec<&dyn rusqlite::ToSql> =
+                    args.iter().map(AsRef::as_ref).collect();
+                let iter = stmt.query_map(rusqlite::params_from_iter(param_refs), |r| {
+                    let dir_s: String = r.get(9)?;
+                    let media_meta_s: Option<String> = r.get(8)?;
+                    let raw_s: String = r.get(10)?;
+                    Ok((
+                        r.get::<_, i64>(0)?, // message_id
+                        r.get::<_, i64>(1)?, // date
+                        r.get::<_, Option<i64>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<i64>>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                        r.get::<_, Option<String>>(6)?,
+                        r.get::<_, Option<String>>(7)?,
+                        media_meta_s,
+                        dir_s,
+                        raw_s,
+                    ))
+                })?;
+
+                let mut out = Vec::new();
+                for row in iter {
+                    let (
+                        mid,
+                        date,
+                        from_id,
+                        from_name,
+                        reply_to,
+                        text,
+                        media_kind,
+                        media_file_id,
+                        media_meta_s,
+                        dir_s,
+                        raw_s,
+                    ) = row?;
+                    let direction = crate::Direction::from_sql(&dir_s).ok_or_else(|| {
+                        HistoryError::Corruption(format!("bad direction: {dir_s}"))
+                    })?;
+                    let media_meta = media_meta_s
+                        .map(|s| serde_json::from_str(&s))
+                        .transpose()?;
+                    let raw = serde_json::from_str(&raw_s)?;
+                    out.push(crate::StoredMessage {
+                        chat_id,
+                        message_id: mid,
+                        date,
+                        from_id,
+                        from_name,
+                        reply_to,
+                        text,
+                        media_kind,
+                        media_file_id,
+                        media_meta,
+                        direction,
+                        raw,
+                    });
+                }
+                Ok(out)
+            },
+        )
+        .await?
+    }
+
+    /// List all known chats, newest-`last_seen` first, with the most recent
+    /// stored `message_id` and a count of unread inbound messages.
+    ///
+    /// "Unread" is defined as inbound messages with `message_id` strictly
+    /// greater than the per-chat `last_unread_baseline:<chat_id>` value stored
+    /// in the `kv` table. When no baseline is recorded, the baseline is
+    /// treated as `0` so every inbound message counts as unread.
+    #[allow(clippy::cognitive_complexity)]
+    // reason: linear collect + per-chat aggregation in one place is easier to read than two methods
+    pub async fn list_chats(&self) -> Result<Vec<crate::ChatSummary>, HistoryError> {
+        let conn = self.inner.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<crate::ChatSummary>, HistoryError> {
+            let guard = conn.blocking_lock();
+            let mut stmt = guard.prepare(
+                "SELECT c.chat_id, c.kind, c.title, c.username, c.first_seen, c.last_seen, \
+                        (SELECT MAX(message_id) FROM messages m WHERE m.chat_id=c.chat_id) AS last_msg \
+                 FROM chats c \
+                 ORDER BY c.last_seen DESC",
+            )?;
+            let mut chats: Vec<(crate::ChatInfo, Option<i64>)> = stmt
+                .query_map([], |r| {
+                    let kind_s: String = r.get(1)?;
+                    Ok((
+                        crate::ChatInfo {
+                            chat_id: r.get(0)?,
+                            kind: crate::ChatKind::from_sql(&kind_s)
+                                .ok_or(rusqlite::Error::InvalidQuery)?,
+                            title: r.get(2)?,
+                            username: r.get(3)?,
+                            first_seen: r.get(4)?,
+                            last_seen: r.get(5)?,
+                        },
+                        r.get::<_, Option<i64>>(6)?,
+                    ))
+                })?
+                .collect::<Result<_, _>>()?;
+
+            let mut out = Vec::with_capacity(chats.len());
+            for (info, last_message_id) in chats.drain(..) {
+                let unread_baseline: Option<i64> = guard
+                    .query_row(
+                        "SELECT value FROM kv WHERE key = ?1",
+                        rusqlite::params![format!("last_unread_baseline:{}", info.chat_id)],
+                        |r| r.get::<_, String>(0).map(|s| s.parse().unwrap_or(0)),
+                    )
+                    .ok();
+                let unread_count: i64 = guard.query_row(
+                    "SELECT COUNT(*) FROM messages \
+                     WHERE chat_id=?1 AND direction='in' AND message_id > ?2",
+                    rusqlite::params![info.chat_id, unread_baseline.unwrap_or(0)],
+                    |r| r.get(0),
+                )?;
+                out.push(crate::ChatSummary { info, unread_count, last_message_id });
+            }
+            Ok(out)
+        })
+        .await?
+    }
 }
