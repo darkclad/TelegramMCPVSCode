@@ -120,6 +120,186 @@ impl TgClient {
             date: msg.date.timestamp(),
         })
     }
+
+    /// Edit the text of a previously sent message via `editMessageText`.
+    ///
+    /// `chat_id` / `message_id` identify the target message; `text` is the
+    /// replacement body. `parse_mode` controls HTML / `MarkdownV2` rendering.
+    ///
+    /// # Errors
+    ///
+    /// See [`TgClient::send_message`] — error mapping is identical.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Telegram message IDs fit in i32"
+    )]
+    pub async fn edit_message_text(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+        parse_mode: Option<teloxide::types::ParseMode>,
+    ) -> Result<SentMessage, TgClientError> {
+        use teloxide::prelude::*;
+        let mut req = self.bot.edit_message_text(
+            ChatId(chat_id),
+            teloxide::types::MessageId(message_id as i32),
+            text,
+        );
+        if let Some(pm) = parse_mode {
+            req = req.parse_mode(pm);
+        }
+        let msg = req.await.map_err(map_teloxide_err)?;
+        Ok(SentMessage {
+            chat_id: msg.chat.id.0,
+            message_id: i64::from(msg.id.0),
+            date: msg.date.timestamp(),
+        })
+    }
+
+    /// Delete a message in the given chat via `deleteMessage`.
+    ///
+    /// Telegram returns `true` on success; this method discards that and
+    /// returns `()`.
+    ///
+    /// # Errors
+    ///
+    /// See [`TgClient::send_message`] — error mapping is identical.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Telegram message IDs fit in i32"
+    )]
+    pub async fn delete_message(&self, chat_id: i64, message_id: i64) -> Result<(), TgClientError> {
+        use teloxide::prelude::*;
+        self.bot
+            .delete_message(ChatId(chat_id), teloxide::types::MessageId(message_id as i32))
+            .await
+            .map_err(map_teloxide_err)?;
+        Ok(())
+    }
+
+    /// Forward a message from `from_chat` to `to_chat` via `forwardMessage`.
+    ///
+    /// Returns a [`SentMessage`] describing the newly created message in the
+    /// destination chat — `chat_id` is `to_chat`, `message_id` is the new id.
+    ///
+    /// # Errors
+    ///
+    /// See [`TgClient::send_message`] — error mapping is identical.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Telegram message IDs fit in i32"
+    )]
+    pub async fn forward_message(
+        &self,
+        from_chat: i64,
+        message_id: i64,
+        to_chat: i64,
+    ) -> Result<SentMessage, TgClientError> {
+        use teloxide::prelude::*;
+        let msg = self
+            .bot
+            .forward_message(
+                ChatId(to_chat),
+                ChatId(from_chat),
+                teloxide::types::MessageId(message_id as i32),
+            )
+            .await
+            .map_err(map_teloxide_err)?;
+        Ok(SentMessage {
+            chat_id: msg.chat.id.0,
+            message_id: i64::from(msg.id.0),
+            date: msg.date.timestamp(),
+        })
+    }
+
+    /// Send a chat action (typing, `upload_photo`, …) via `sendChatAction`.
+    ///
+    /// Useful for surfacing "typing…" UI before a long-running response.
+    ///
+    /// # Errors
+    ///
+    /// See [`TgClient::send_message`] — error mapping is identical.
+    pub async fn send_chat_action(
+        &self,
+        chat_id: i64,
+        action: teloxide::types::ChatAction,
+    ) -> Result<(), TgClientError> {
+        use teloxide::prelude::*;
+        self.bot
+            .send_chat_action(ChatId(chat_id), action)
+            .await
+            .map_err(map_teloxide_err)?;
+        Ok(())
+    }
+
+    /// Upload and send a local image file via `sendPhoto`.
+    ///
+    /// `path` points at an on-disk image; `caption` and `parse_mode` are
+    /// optional. The upload is performed via multipart so this method
+    /// requires real network I/O and is exercised in higher-level end-to-end
+    /// tests rather than via `wiremock`.
+    ///
+    /// # Errors
+    ///
+    /// See [`TgClient::send_message`] — error mapping is identical.
+    pub async fn send_photo_path(
+        &self,
+        chat_id: i64,
+        path: &std::path::Path,
+        caption: Option<&str>,
+        parse_mode: Option<teloxide::types::ParseMode>,
+    ) -> Result<SentMessage, TgClientError> {
+        use teloxide::prelude::*;
+        use teloxide::types::InputFile;
+        let mut req = self.bot.send_photo(ChatId(chat_id), InputFile::file(path));
+        if let Some(c) = caption {
+            req = req.caption(c);
+        }
+        if let Some(pm) = parse_mode {
+            req = req.parse_mode(pm);
+        }
+        let msg = req.await.map_err(map_teloxide_err)?;
+        Ok(SentMessage {
+            chat_id: msg.chat.id.0,
+            message_id: i64::from(msg.id.0),
+            date: msg.date.timestamp(),
+        })
+    }
+
+    /// Upload and send a local file as a document via `sendDocument`.
+    ///
+    /// `path` points at an on-disk file; `caption` is optional; `filename`
+    /// overrides the name Telegram displays. As with [`Self::send_photo_path`]
+    /// the upload is multipart and is covered by higher-level tests.
+    ///
+    /// # Errors
+    ///
+    /// See [`TgClient::send_message`] — error mapping is identical.
+    pub async fn send_document_path(
+        &self,
+        chat_id: i64,
+        path: &std::path::Path,
+        caption: Option<&str>,
+        filename: Option<&str>,
+    ) -> Result<SentMessage, TgClientError> {
+        use teloxide::prelude::*;
+        use teloxide::types::InputFile;
+        let mut file = InputFile::file(path);
+        if let Some(name) = filename {
+            file = file.file_name(name.to_string());
+        }
+        let mut req = self.bot.send_document(ChatId(chat_id), file);
+        if let Some(c) = caption {
+            req = req.caption(c);
+        }
+        let msg = req.await.map_err(map_teloxide_err)?;
+        Ok(SentMessage {
+            chat_id: msg.chat.id.0,
+            message_id: i64::from(msg.id.0),
+            date: msg.date.timestamp(),
+        })
+    }
 }
 
 fn map_teloxide_err(e: teloxide::RequestError) -> TgClientError {
