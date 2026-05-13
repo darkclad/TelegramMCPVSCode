@@ -458,4 +458,109 @@ impl History {
         })
         .await?
     }
+
+    /// Upsert a string value into the `kv` table under `key`.
+    ///
+    /// Used for small bits of persistent state (e.g. the tg-updater's
+    /// `update_offset`, per-chat unread baselines, the schema version).
+    pub async fn kv_put(&self, key: &str, value: &str) -> Result<(), HistoryError> {
+        let conn = self.inner.clone();
+        let key = key.to_string();
+        let value = value.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), HistoryError> {
+            let guard = conn.blocking_lock();
+            guard.execute(
+                "INSERT INTO kv(key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![key, value],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Read a string value from the `kv` table. Returns `Ok(None)` when no
+    /// row with the given `key` exists.
+    pub async fn kv_get(&self, key: &str) -> Result<Option<String>, HistoryError> {
+        let conn = self.inner.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || -> Result<Option<String>, HistoryError> {
+            let guard = conn.blocking_lock();
+            let row: Result<String, _> = guard.query_row(
+                "SELECT value FROM kv WHERE key=?1",
+                rusqlite::params![key],
+                |r| r.get(0),
+            );
+            match row {
+                Ok(v) => Ok(Some(v)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(HistoryError::Sqlite(e)),
+            }
+        })
+        .await?
+    }
+
+    /// Mark all inbound messages in `chat_id` with `message_id <=
+    /// up_to_message_id` as read by writing the baseline into the `kv` table.
+    ///
+    /// Consumed by [`Self::list_chats`] when computing `unread_count`.
+    pub async fn mark_read(&self, chat_id: i64, up_to_message_id: i64) -> Result<(), HistoryError> {
+        self.kv_put(
+            &format!("last_unread_baseline:{chat_id}"),
+            &up_to_message_id.to_string(),
+        )
+        .await
+    }
+
+    /// Delete all messages with `date < cutoff_unix_secs` and rebuild the FTS5
+    /// index. Returns the number of rows deleted.
+    ///
+    /// The FTS5 `'rebuild'` command is used (rather than per-row `'delete'`)
+    /// because it's the canonical way to keep an external-content FTS5 table
+    /// in sync after a bulk DELETE.
+    pub async fn trim_older_than(&self, cutoff_unix_secs: i64) -> Result<usize, HistoryError> {
+        let conn = self.inner.clone();
+        tokio::task::spawn_blocking(move || -> Result<usize, HistoryError> {
+            let guard = conn.blocking_lock();
+            let removed = guard.execute(
+                "DELETE FROM messages WHERE date < ?1",
+                rusqlite::params![cutoff_unix_secs],
+            )?;
+            guard.execute(
+                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
+                [],
+            )?;
+            Ok(removed)
+        })
+        .await?
+    }
+
+    /// Per-chat retention: keep only the `keep_newest` highest-`message_id`
+    /// rows in each chat, deleting older ones, then rebuild the FTS5 index.
+    /// Returns the total number of rows deleted across all chats.
+    ///
+    /// Uses SQL window functions (`ROW_NUMBER() OVER (PARTITION BY ...)`),
+    /// which require `SQLite` 3.25+ — provided by the bundled rusqlite.
+    pub async fn trim_per_chat_to(&self, keep_newest: i64) -> Result<usize, HistoryError> {
+        let conn = self.inner.clone();
+        tokio::task::spawn_blocking(move || -> Result<usize, HistoryError> {
+            let guard = conn.blocking_lock();
+            let removed = guard.execute(
+                "DELETE FROM messages WHERE rowid IN ( \
+                    SELECT rowid FROM ( \
+                        SELECT rowid, ROW_NUMBER() OVER ( \
+                            PARTITION BY chat_id ORDER BY message_id DESC \
+                        ) AS rn FROM messages \
+                    ) WHERE rn > ?1 \
+                 )",
+                rusqlite::params![keep_newest],
+            )?;
+            guard.execute(
+                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
+                [],
+            )?;
+            Ok(removed)
+        })
+        .await?
+    }
 }
