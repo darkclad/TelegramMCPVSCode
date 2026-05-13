@@ -414,6 +414,80 @@ impl TgClient {
             })?;
         Ok(arr)
     }
+
+    /// Download a Telegram-hosted file by `file_id` to `dest` on disk.
+    ///
+    /// Performs the two-step Telegram Bot API download flow: a `getFile`
+    /// call to translate `file_id` into the server-relative `file_path`,
+    /// followed by a streamed `GET <api_base>/file/bot<token>/<file_path>`
+    /// whose body bytes are written into `dest`. Missing parent directories
+    /// of `dest` are created. The response body is consumed chunk-by-chunk
+    /// via [`reqwest::Response::chunk`] so large media never fully buffer in
+    /// memory. Returns the number of bytes written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TgClientError::Api`] when `getFile` responds with
+    /// `ok: false`, [`TgClientError::Download`] when the `file_path` is
+    /// missing from a successful `getFile` response or when the local write
+    /// fails, and [`TgClientError::Http`] for transport-level failures
+    /// (including non-2xx responses on the file fetch).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Telegram error codes fit in i32"
+    )]
+    pub async fn download_file(
+        &self,
+        file_id: &str,
+        dest: &std::path::Path,
+    ) -> Result<u64, TgClientError> {
+        // 1) getFile to learn the path. Leading `/` mirrors the Task 13
+        // construction so `bot12345:...` is not misread as a URI scheme;
+        // `GetFile` casing matches teloxide's method-URL convention.
+        let get_file_url = self
+            .api_base
+            .join(&format!("/bot{}/GetFile", self.token))?;
+        let client = reqwest::Client::new();
+        let resp: serde_json::Value = client
+            .post(get_file_url)
+            .json(&serde_json::json!({ "file_id": file_id }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if resp["ok"].as_bool() != Some(true) {
+            return Err(TgClientError::Api {
+                code: resp["error_code"].as_i64().unwrap_or(0) as i32,
+                description: resp["description"].as_str().unwrap_or("").into(),
+            });
+        }
+        let file_path = resp["result"]["file_path"]
+            .as_str()
+            .ok_or_else(|| TgClientError::Download("missing file_path".into()))?;
+
+        // 2) GET the file bytes. Stream chunks straight to disk so large
+        // attachments don't fully buffer in memory.
+        let dl_url = self
+            .api_base
+            .join(&format!("/file/bot{}/{}", self.token, file_path))?;
+        let mut resp = client.get(dl_url).send().await?.error_for_status()?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TgClientError::Download(e.to_string()))?;
+        }
+        let mut file = tokio::fs::File::create(dest)
+            .await
+            .map_err(|e| TgClientError::Download(e.to_string()))?;
+        let mut total = 0_u64;
+        while let Some(chunk) = resp.chunk().await? {
+            use tokio::io::AsyncWriteExt;
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| TgClientError::Download(e.to_string()))?;
+            total += chunk.len() as u64;
+        }
+        Ok(total)
+    }
 }
 
 fn map_teloxide_err(e: teloxide::RequestError) -> TgClientError {
