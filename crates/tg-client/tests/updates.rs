@@ -39,6 +39,34 @@ async fn get_updates_returns_serde_json_value() {
 }
 
 #[tokio::test]
+async fn transport_error_does_not_leak_token() {
+    // Mount no handlers — the wiremock server will respond with 404 for any
+    // request. That non-2xx still flows through json() decoding and fails
+    // there, so the resulting reqwest::Error carries the request URL (which
+    // includes the bot token) by default. We assert the token has been
+    // stripped before the error reaches the user.
+    let server = MockServer::start().await;
+    let api_base = Url::parse(&server.uri()).unwrap();
+    let token = "12345:secret".to_string();
+    let client = TgClient::new(token.clone(), Some(api_base)).unwrap();
+
+    let err = client
+        .get_updates_raw(None, 0, None)
+        .await
+        .expect_err("no mock mounted, request must fail");
+
+    let msg = err.to_string();
+    assert!(
+        !msg.contains(&token),
+        "error display leaked bot token: {msg}"
+    );
+    assert!(
+        !msg.contains("secret"),
+        "error display contains secret substring: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn get_me_returns_username() {
     let server = MockServer::start().await;
     let api_base = Url::parse(&server.uri()).unwrap();

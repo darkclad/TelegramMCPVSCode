@@ -391,14 +391,17 @@ impl TgClient {
         }
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs + 10))
-            .build()?;
+            .build()
+            .map_err(redact_reqwest_err)?;
         let resp: serde_json::Value = client
             .post(url)
             .json(&serde_json::Value::Object(body))
             .send()
-            .await?
+            .await
+            .map_err(redact_reqwest_err)?
             .json()
-            .await?;
+            .await
+            .map_err(redact_reqwest_err)?;
         if resp["ok"].as_bool() != Some(true) {
             let code = resp["error_code"].as_i64().unwrap_or(0) as i32;
             let desc = resp["description"].as_str().unwrap_or("").to_string();
@@ -459,9 +462,11 @@ impl TgClient {
             .post(get_file_url)
             .json(&serde_json::json!({ "file_id": file_id }))
             .send()
-            .await?
+            .await
+            .map_err(redact_reqwest_err)?
             .json()
-            .await?;
+            .await
+            .map_err(redact_reqwest_err)?;
         if resp["ok"].as_bool() != Some(true) {
             return Err(TgClientError::Api {
                 code: resp["error_code"].as_i64().unwrap_or(0) as i32,
@@ -477,7 +482,13 @@ impl TgClient {
         let dl_url = self
             .api_base
             .join(&format!("/file/bot{}/{}", self.token, file_path))?;
-        let mut resp = client.get(dl_url).send().await?.error_for_status()?;
+        let mut resp = client
+            .get(dl_url)
+            .send()
+            .await
+            .map_err(redact_reqwest_err)?
+            .error_for_status()
+            .map_err(redact_reqwest_err)?;
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| TgClientError::Download(e.to_string()))?;
         }
@@ -485,7 +496,7 @@ impl TgClient {
             .await
             .map_err(|e| TgClientError::Download(e.to_string()))?;
         let mut total = 0_u64;
-        while let Some(chunk) = resp.chunk().await? {
+        while let Some(chunk) = resp.chunk().await.map_err(redact_reqwest_err)? {
             use tokio::io::AsyncWriteExt;
             file.write_all(&chunk)
                 .await
@@ -494,6 +505,17 @@ impl TgClient {
         }
         Ok(total)
     }
+}
+
+/// Strip the request URL from a [`reqwest::Error`] before propagating, so
+/// the bot token (embedded in `/bot<token>/...` paths) cannot leak via the
+/// error's `Display` impl into logs or MCP error responses.
+///
+/// `reqwest::Error::without_url` consumes the error and returns a new one
+/// whose `Display` no longer includes the URL — the canonical way to scrub
+/// secrets from reqwest errors.
+pub(crate) fn redact_reqwest_err(e: reqwest::Error) -> TgClientError {
+    TgClientError::Http(e.without_url())
 }
 
 fn map_teloxide_err(e: teloxide::RequestError) -> TgClientError {

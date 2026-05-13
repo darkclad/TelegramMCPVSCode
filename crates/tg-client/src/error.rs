@@ -6,8 +6,13 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum TgClientError {
     /// Transport-level HTTP error (DNS, TCP, TLS, timeouts).
+    ///
+    /// Constructed only via [`crate::client::redact_reqwest_err`], which
+    /// strips the request URL before wrapping — otherwise the bot token,
+    /// which is embedded in `/bot<token>/...` paths, would leak through
+    /// `reqwest::Error`'s `Display` impl into logs and MCP error responses.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     /// Telegram Bot API returned `ok: false` with an error code/description.
     #[error("Telegram API error {code}: {description}")]
     Api {
