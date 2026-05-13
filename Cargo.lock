@@ -1931,6 +1931,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tg-updater"
+version = "0.0.1"
+dependencies = [
+ "history",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tg-client",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
