@@ -531,13 +531,10 @@ impl ServerHandler for Server {
                     .get_chat(chat_id)
                     .await
                     .map_err(|e| history_err_to_mcp(&e))?;
-                match c {
-                    Some(info) => ok_json(&info),
-                    None => Err(McpError::invalid_params(
-                        format!("chat {chat_id} not in history"),
-                        None,
-                    )),
-                }
+                // `Option<ChatInfo>` serialises as `null` when None — the
+                // LLM gets a real "no such chat" answer rather than an
+                // error it has to special-case.
+                ok_json(&c)
             }
             "tg_history_messages" => {
                 let input: HistoryMessagesInput = parse_args(request.arguments.as_ref())?;
