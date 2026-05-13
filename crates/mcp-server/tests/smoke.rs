@@ -69,3 +69,120 @@ async fn whoami_round_trip() {
     let parsed: serde_json::Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
     assert_eq!(parsed["username"], "testbot");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_message_round_trip() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/bot12345:fake/SendMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "result": {
+                "message_id": 7, "date": 1_700_000_000,
+                "chat": { "id": 42, "type": "private" }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    let db_path = dir.path().join("h.db");
+    std::fs::write(&cfg_path, make_config(&server.uri(), &db_path, 42)).unwrap();
+
+    let mut client = McpClient::spawn(&binary_path(), &cfg_path);
+    client.initialize();
+    let resp = client.call_tool(
+        "tg_send_message",
+        serde_json::json!({
+            "chat": "test", "text": "hello"
+        }),
+    );
+    let content = &resp["result"]["content"][0]["text"];
+    let parsed: serde_json::Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
+    assert_eq!(parsed["message_id"], 7);
+    assert_eq!(parsed["chat_id"], 42);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_then_history_messages_readback() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/bot12345:fake/SendMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "result": {
+                "message_id": 1, "date": 1_700_000_000,
+                "chat": { "id": 42, "type": "private" }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    let db_path = dir.path().join("h.db");
+    std::fs::write(&cfg_path, make_config(&server.uri(), &db_path, 42)).unwrap();
+    let mut client = McpClient::spawn(&binary_path(), &cfg_path);
+    client.initialize();
+    let _ = client.call_tool(
+        "tg_send_message",
+        serde_json::json!({
+            "chat": "test", "text": "stored"
+        }),
+    );
+    let resp = client.call_tool(
+        "tg_history_messages",
+        serde_json::json!({
+            "chat": "test", "limit": 10
+        }),
+    );
+    let content = &resp["result"]["content"][0]["text"];
+    let parsed: serde_json::Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
+    assert_eq!(parsed[0]["text"], "stored");
+    assert_eq!(parsed[0]["direction"], "out");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_to_disallowed_chat_returns_error() {
+    let server = MockServer::start().await;
+    let dir = tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    let db_path = dir.path().join("h.db");
+    let api_base = server.uri();
+    let db = db_path.display().to_string().replace('\\', "/");
+    let cfg = format!(
+        r#"
+[bot]
+token = "12345:fake"
+api_base_url = "{api_base}"
+
+[storage]
+path = "{db}"
+
+[updater]
+enabled = false
+
+[aliases]
+allowed = 100
+stranger = 200
+
+[access]
+allowed_send_targets = ["allowed"]
+"#
+    );
+    std::fs::write(&cfg_path, cfg).unwrap();
+
+    let mut client = McpClient::spawn(&binary_path(), &cfg_path);
+    client.initialize();
+    let resp = client.call_tool(
+        "tg_send_message",
+        serde_json::json!({
+            "chat": "stranger", "text": "blocked"
+        }),
+    );
+    assert!(
+        resp.get("error").is_some(),
+        "expected an error response, got {resp}"
+    );
+}
