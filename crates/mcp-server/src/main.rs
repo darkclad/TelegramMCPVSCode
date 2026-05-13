@@ -29,7 +29,10 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::error::{alias_err_to_mcp, client_err_to_mcp, history_err_to_mcp};
-use crate::tools_io::{BotWhoamiInput, ListAliasesInput, SendMessageInput, SendMessageOutput};
+use crate::tools_io::{
+    BotWhoamiInput, ChatActionInput, DeleteMessageInput, EditMessageInput, ForwardMessageInput,
+    ListAliasesInput, SendDocumentInput, SendMessageInput, SendMessageOutput, SendPhotoInput,
+};
 
 use aliases::{Aliases, ChatRef};
 use history::History;
@@ -136,6 +139,82 @@ fn parse_parse_mode(s: &str) -> Option<teloxide::types::ParseMode> {
     }
 }
 
+/// Map a Bot API chat-action string to teloxide's [`ChatAction`].
+///
+/// Matching is case-sensitive: the LLM-facing tool input must use the exact
+/// Bot API spellings (e.g. `"typing"`, `"upload_photo"`). Unknown values
+/// return `None` so the caller can surface a clear "unknown action" error.
+///
+/// [`ChatAction`]: teloxide::types::ChatAction
+fn chat_action_from_str(s: &str) -> Option<teloxide::types::ChatAction> {
+    use teloxide::types::ChatAction as A;
+    Some(match s {
+        "typing" => A::Typing,
+        "upload_photo" => A::UploadPhoto,
+        "record_video" => A::RecordVideo,
+        "upload_video" => A::UploadVideo,
+        "record_voice" => A::RecordVoice,
+        "upload_voice" => A::UploadVoice,
+        "upload_document" => A::UploadDocument,
+        "find_location" => A::FindLocation,
+        "record_video_note" => A::RecordVideoNote,
+        "upload_video_note" => A::UploadVideoNote,
+        _ => return None,
+    })
+}
+
+/// Mirror an outbound Bot API success into local history.
+///
+/// Used by every send-side tool (`tg_send_message`, `tg_send_photo`, ...) so
+/// that messages we originate appear in history with `direction = 'out'`. The
+/// helper upserts a placeholder [`ChatInfo`] (overwritten on the next inbound
+/// update) and then writes a single [`StoredMessage`] row. `text` is the
+/// optional plain-text body or caption, `media_kind` is the media tag (e.g.
+/// `"photo"`, `"document"`), and `reply_to` propagates `reply_to_message_id`
+/// when the caller knows it — the Bot API's send response does not always
+/// echo it back.
+///
+/// [`ChatInfo`]: history::ChatInfo
+/// [`StoredMessage`]: history::StoredMessage
+async fn mirror_outbound(
+    store: &History,
+    sent: &tg_client::SentMessage,
+    text: Option<&str>,
+    media_kind: Option<&str>,
+    reply_to: Option<i64>,
+) -> Result<(), McpError> {
+    let chat_info = history::ChatInfo {
+        chat_id: sent.chat_id,
+        kind: history::ChatKind::Private, // overwritten on next inbound update
+        title: None,
+        username: None,
+        first_seen: sent.date,
+        last_seen: sent.date,
+    };
+    store
+        .upsert_chat(&chat_info)
+        .await
+        .map_err(|e| history_err_to_mcp(&e))?;
+    store
+        .insert_message(&history::StoredMessage {
+            chat_id: sent.chat_id,
+            message_id: sent.message_id,
+            date: sent.date,
+            from_id: None,
+            from_name: None,
+            reply_to,
+            text: text.map(str::to_string),
+            media_kind: media_kind.map(str::to_string),
+            media_file_id: None,
+            media_meta: None,
+            direction: history::Direction::Out,
+            raw: serde_json::json!({ "outbound": true }),
+        })
+        .await
+        .map_err(|e| history_err_to_mcp(&e))?;
+    Ok(())
+}
+
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
@@ -177,11 +256,52 @@ impl ServerHandler for Server {
                      written to local history with direction='out'.",
                     schema_obj::<SendMessageInput>(),
                 ),
+                tool(
+                    "tg_send_photo",
+                    "Send a photo from a local path. Caption optional. Mirrors to history.",
+                    schema_obj::<SendPhotoInput>(),
+                ),
+                tool(
+                    "tg_send_document",
+                    "Send a document (any file) from a local path. Caption + custom filename \
+                     optional.",
+                    schema_obj::<SendDocumentInput>(),
+                ),
+                tool(
+                    "tg_edit_message",
+                    "Edit the text of a previously-sent message. Returns the updated message \
+                     stamp.",
+                    schema_obj::<EditMessageInput>(),
+                ),
+                tool(
+                    "tg_delete_message",
+                    "Delete a message by chat + message_id. Bot can only delete its own messages \
+                     (or other users' messages if it has admin rights).",
+                    schema_obj::<DeleteMessageInput>(),
+                ),
+                tool(
+                    "tg_forward_message",
+                    "Forward a message from one chat to another. Returns the forwarded message \
+                     id.",
+                    schema_obj::<ForwardMessageInput>(),
+                ),
+                tool(
+                    "tg_send_chat_action",
+                    "Show a 'typing'/'uploading'/etc. indicator in the chat for ~5s. \
+                     action: typing | upload_photo | record_video | upload_video | record_voice \
+                     | upload_voice | upload_document | find_location | record_video_note | \
+                     upload_video_note",
+                    schema_obj::<ChatActionInput>(),
+                ),
             ],
             next_cursor: None,
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single match dispatcher; per-arm splitting would obscure the tool surface"
+    )]
     async fn call_tool(
         &self,
         request: CallToolRequestParam,
@@ -220,43 +340,132 @@ impl ServerHandler for Server {
                     )
                     .await
                     .map_err(|e| client_err_to_mcp(&e))?;
-                // Mirror into history as direction='out'.
-                let chat_info = history::ChatInfo {
-                    chat_id: sent.chat_id,
-                    kind: history::ChatKind::Private, // overwritten on next inbound update
-                    title: None,
-                    username: None,
-                    first_seen: sent.date,
-                    last_seen: sent.date,
-                };
-                self.0
-                    .store
-                    .upsert_chat(&chat_info)
-                    .await
-                    .map_err(|e| history_err_to_mcp(&e))?;
-                self.0
-                    .store
-                    .insert_message(&history::StoredMessage {
-                        chat_id: sent.chat_id,
-                        message_id: sent.message_id,
-                        date: sent.date,
-                        from_id: None,
-                        from_name: None,
-                        reply_to: input.reply_to,
-                        text: Some(input.text.clone()),
-                        media_kind: None,
-                        media_file_id: None,
-                        media_meta: None,
-                        direction: history::Direction::Out,
-                        raw: serde_json::json!({ "outbound": true }),
-                    })
-                    .await
-                    .map_err(|e| history_err_to_mcp(&e))?;
+                mirror_outbound(&self.0.store, &sent, Some(&input.text), None, input.reply_to)
+                    .await?;
                 ok_json(&SendMessageOutput {
                     chat_id: sent.chat_id,
                     message_id: sent.message_id,
                     date: sent.date,
                 })
+            }
+            "tg_send_photo" => {
+                let input: SendPhotoInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                check_send_allowed(&self.0, chat_id)?;
+                let pm = input.parse_mode.as_deref().and_then(parse_parse_mode);
+                let sent = self
+                    .0
+                    .bot
+                    .send_photo_path(chat_id, &input.path, input.caption.as_deref(), pm)
+                    .await
+                    .map_err(|e| client_err_to_mcp(&e))?;
+                mirror_outbound(
+                    &self.0.store,
+                    &sent,
+                    input.caption.as_deref(),
+                    Some("photo"),
+                    None,
+                )
+                .await?;
+                ok_json(&SendMessageOutput {
+                    chat_id: sent.chat_id,
+                    message_id: sent.message_id,
+                    date: sent.date,
+                })
+            }
+            "tg_send_document" => {
+                let input: SendDocumentInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                check_send_allowed(&self.0, chat_id)?;
+                let sent = self
+                    .0
+                    .bot
+                    .send_document_path(
+                        chat_id,
+                        &input.path,
+                        input.caption.as_deref(),
+                        input.filename.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| client_err_to_mcp(&e))?;
+                mirror_outbound(
+                    &self.0.store,
+                    &sent,
+                    input.caption.as_deref(),
+                    Some("document"),
+                    None,
+                )
+                .await?;
+                ok_json(&SendMessageOutput {
+                    chat_id: sent.chat_id,
+                    message_id: sent.message_id,
+                    date: sent.date,
+                })
+            }
+            "tg_edit_message" => {
+                let input: EditMessageInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                check_send_allowed(&self.0, chat_id)?;
+                let pm = input.parse_mode.as_deref().and_then(parse_parse_mode);
+                let sent = self
+                    .0
+                    .bot
+                    .edit_message_text(chat_id, input.message_id, &input.text, pm)
+                    .await
+                    .map_err(|e| client_err_to_mcp(&e))?;
+                mirror_outbound(&self.0.store, &sent, Some(&input.text), None, None).await?;
+                ok_json(&SendMessageOutput {
+                    chat_id: sent.chat_id,
+                    message_id: sent.message_id,
+                    date: sent.date,
+                })
+            }
+            "tg_delete_message" => {
+                let input: DeleteMessageInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                check_send_allowed(&self.0, chat_id)?;
+                self.0
+                    .bot
+                    .delete_message(chat_id, input.message_id)
+                    .await
+                    .map_err(|e| client_err_to_mcp(&e))?;
+                ok_json(&serde_json::json!({
+                    "deleted": true,
+                    "chat_id": chat_id,
+                    "message_id": input.message_id,
+                }))
+            }
+            "tg_forward_message" => {
+                let input: ForwardMessageInput = parse_args(request.arguments.as_ref())?;
+                let from_chat = resolve_chat(&self.0.aliases, &input.from_chat)?;
+                let to_chat = resolve_chat(&self.0.aliases, &input.to_chat)?;
+                check_send_allowed(&self.0, to_chat)?;
+                let sent = self
+                    .0
+                    .bot
+                    .forward_message(from_chat, input.message_id, to_chat)
+                    .await
+                    .map_err(|e| client_err_to_mcp(&e))?;
+                mirror_outbound(&self.0.store, &sent, None, None, None).await?;
+                ok_json(&SendMessageOutput {
+                    chat_id: sent.chat_id,
+                    message_id: sent.message_id,
+                    date: sent.date,
+                })
+            }
+            "tg_send_chat_action" => {
+                let input: ChatActionInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                check_send_allowed(&self.0, chat_id)?;
+                let action = chat_action_from_str(&input.action).ok_or_else(|| {
+                    McpError::invalid_params(format!("unknown action: {}", input.action), None)
+                })?;
+                self.0
+                    .bot
+                    .send_chat_action(chat_id, action)
+                    .await
+                    .map_err(|e| client_err_to_mcp(&e))?;
+                ok_json(&serde_json::json!({ "ok": true }))
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
