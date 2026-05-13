@@ -8,8 +8,9 @@ token_env = "TELEGRAM_BOT_TOKEN"
 # api_base_url = "https://api.telegram.org"   # override for tests
 
 [storage]
-# SQLite history database. Parent directory must exist.
-path = "C:/Users/user/AppData/Local/TelegramMCP/history.db"
+# SQLite history database. Path can be relative (resolved against CWD) or absolute.
+# Parent directory must exist before launching the server.
+path = "./history.db"
 
 [updater]
 enabled = true
