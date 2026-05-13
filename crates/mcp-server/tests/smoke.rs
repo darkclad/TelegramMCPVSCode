@@ -186,3 +186,61 @@ allowed_send_targets = ["allowed"]
         "expected an error response, got {resp}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn updater_enabled_flows_inbound_to_history_search() {
+    let server = MockServer::start().await;
+
+    // updater hits getUpdates — return one batch then empties.
+    Mock::given(method("POST")).and(path("/bot12345:fake/GetUpdates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "result": [{
+                "update_id": 1,
+                "message": {
+                    "message_id": 5, "date": 1_700_000_000,
+                    "chat": { "id": 42, "type": "private", "first_name": "alice" },
+                    "from": { "id": 42, "is_bot": false, "first_name": "alice" },
+                    "text": "the unique fingerprint string"
+                }
+            }]
+        })))
+        .up_to_n_times(1)
+        .mount(&server).await;
+    Mock::given(method("POST")).and(path("/bot12345:fake/GetUpdates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true, "result": []
+        })))
+        .mount(&server).await;
+
+    let dir = tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    let db_path = dir.path().join("h.db");
+    let cfg = format!(r#"
+[bot]
+token = "12345:fake"
+api_base_url = "{}"
+
+[storage]
+path = "{}"
+
+[updater]
+enabled = true
+poll_timeout_secs = 1
+
+[aliases]
+"#, server.uri(), db_path.display().to_string().replace('\\', "/"));
+    std::fs::write(&cfg_path, cfg).unwrap();
+
+    let mut client = McpClient::spawn(&binary_path(), &cfg_path);
+    client.initialize();
+    // give updater a moment to consume the batch
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+    let resp = client.call_tool("tg_history_search", serde_json::json!({
+        "query": "fingerprint"
+    }));
+    let content = &resp["result"]["content"][0]["text"];
+    let parsed: serde_json::Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
+    assert!(parsed.as_array().unwrap().iter().any(|h| h["chat_id"] == 42));
+}
