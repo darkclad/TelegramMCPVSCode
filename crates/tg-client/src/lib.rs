@@ -7,5 +7,5 @@
 pub mod error;
 mod client;
 
-pub use client::{SentMessage, TgClient};
+pub use client::{BotIdentity, SentMessage, TgClient};
 pub use error::TgClientError;

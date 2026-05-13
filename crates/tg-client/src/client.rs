@@ -14,7 +14,6 @@ pub struct TgClient {
     bot: teloxide::Bot,
     api_base: Url,
     // Held for use by `getUpdates`/`downloadFile` paths wired up in Task 13+.
-    #[allow(dead_code)]
     token: String,
 }
 
@@ -38,6 +37,21 @@ pub struct SentMessage {
     pub message_id: i64,
     /// Unix timestamp (seconds) reported by Telegram for the sent message.
     pub date: i64,
+}
+
+/// Identity of the bot itself, as reported by Telegram `getMe`.
+///
+/// Returned by [`TgClient::get_me`]; useful for logging the configured bot
+/// account at startup and surfacing the bot username to MCP clients.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BotIdentity {
+    /// Numeric Telegram user id of the bot account.
+    pub id: i64,
+    /// `@username` of the bot, without the leading `@`. Always present for
+    /// real bot accounts; modelled as `Option` to mirror the wire format.
+    pub username: Option<String>,
+    /// Display name (first name) of the bot account.
+    pub first_name: String,
 }
 
 impl TgClient {
@@ -299,6 +313,106 @@ impl TgClient {
             message_id: i64::from(msg.id.0),
             date: msg.date.timestamp(),
         })
+    }
+
+    /// Fetch the bot's own identity via `getMe`.
+    ///
+    /// Returns the bot's numeric id, optional `@username`, and display name —
+    /// useful for verifying credentials at startup and surfacing the bot
+    /// account to MCP clients.
+    ///
+    /// # Errors
+    ///
+    /// See [`TgClient::send_message`] — error mapping is identical.
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "Telegram user ids comfortably fit in i64 for the foreseeable future"
+    )]
+    pub async fn get_me(&self) -> Result<BotIdentity, TgClientError> {
+        use teloxide::prelude::Requester;
+        let me = self.bot.get_me().await.map_err(map_teloxide_err)?;
+        Ok(BotIdentity {
+            id: me.id.0 as i64,
+            username: me.username.clone(),
+            first_name: me.first_name.clone(),
+        })
+    }
+
+    /// Long-poll Telegram `getUpdates`, returning each update as a raw
+    /// [`serde_json::Value`].
+    ///
+    /// Bypasses teloxide's typed `Update` enum so newly-introduced update
+    /// kinds flow through unchanged without bumping the `teloxide`
+    /// dependency. `offset` is the standard Telegram acknowledgement cursor
+    /// (`last_update_id + 1`); `timeout_secs` is the long-poll deadline in
+    /// seconds (`0` for an immediate-return short-poll); `allowed_updates`
+    /// optionally restricts which update kinds Telegram will deliver.
+    ///
+    /// The underlying HTTP request uses a connect/read timeout of
+    /// `timeout_secs + 10` so the long-poll deadline always trips before
+    /// the transport timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TgClientError::RateLimited`] on HTTP 429,
+    /// [`TgClientError::Api`] on any `ok: false` response (including a
+    /// `code: -1` sentinel when `result` is missing or not an array), and
+    /// [`TgClientError::Http`] for transport-level failures.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        reason = "Telegram error codes fit in i32; retry_after fits in u32"
+    )]
+    pub async fn get_updates_raw(
+        &self,
+        offset: Option<i64>,
+        timeout_secs: u64,
+        allowed_updates: Option<&[&str]>,
+    ) -> Result<Vec<serde_json::Value>, TgClientError> {
+        // Leading `/` makes this an absolute-path reference per RFC 3986,
+        // so `bot12345:...` is not misread as a URI scheme. This mirrors the
+        // URL construction teloxide-core uses for its method URLs. The
+        // `GetUpdates` casing matches teloxide's method-URL convention and is
+        // accepted by Telegram (method names are case-insensitive).
+        let url = self
+            .api_base
+            .join(&format!("/bot{}/GetUpdates", self.token))?;
+        let mut body = serde_json::Map::new();
+        if let Some(o) = offset {
+            body.insert("offset".into(), serde_json::json!(o));
+        }
+        body.insert("timeout".into(), serde_json::json!(timeout_secs));
+        if let Some(kinds) = allowed_updates {
+            body.insert("allowed_updates".into(), serde_json::json!(kinds));
+        }
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs + 10))
+            .build()?;
+        let resp: serde_json::Value = client
+            .post(url)
+            .json(&serde_json::Value::Object(body))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if resp["ok"].as_bool() != Some(true) {
+            let code = resp["error_code"].as_i64().unwrap_or(0) as i32;
+            let desc = resp["description"].as_str().unwrap_or("").to_string();
+            if code == 429 {
+                let ra = resp["parameters"]["retry_after"].as_u64().unwrap_or(1) as u32;
+                return Err(TgClientError::RateLimited { retry_after_secs: ra });
+            }
+            return Err(TgClientError::Api { code, description: desc });
+        }
+        let arr = resp["result"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| TgClientError::Api {
+                code: -1,
+                description: "result is not an array".into(),
+            })?;
+        Ok(arr)
     }
 }
 
