@@ -1,0 +1,36 @@
+[package]
+name = "mcp-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "TelegramMCP"
+path = "src/main.rs"
+
+[dependencies]
+aliases = { workspace = true }
+history = { workspace = true }
+tg-client = { workspace = true }
+tg-updater = { workspace = true }
+
+rmcp = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+url = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tempfile = { workspace = true }
