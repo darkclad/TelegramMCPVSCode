@@ -9,7 +9,7 @@
 //! trigger exponential backoff (1s → 30s cap); Telegram `429` responses
 //! sleep for the server-supplied `retry_after`.
 
-use crate::{map_update, UpdaterError};
+use crate::{UpdaterError, map_update};
 use history::History;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -119,10 +119,7 @@ impl Updater {
                     }
                     if let Some(m) = max_update_id {
                         let next = m + 1;
-                        if let Err(e) = self
-                            .store
-                            .kv_put("update_offset", &next.to_string())
-                            .await
+                        if let Err(e) = self.store.kv_put("update_offset", &next.to_string()).await
                         {
                             tracing::error!(error = %e, "persist offset failed");
                         } else {

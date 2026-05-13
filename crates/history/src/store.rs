@@ -1,6 +1,6 @@
 //! The [`History`] store handle.
 
-use crate::{schema, HistoryError};
+use crate::{HistoryError, schema};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Arc;
@@ -20,17 +20,18 @@ impl History {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, HistoryError> {
         let mut conn = Connection::open(path)?;
         schema::migrate(&mut conn)?;
-        Ok(Self { inner: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            inner: Arc::new(Mutex::new(conn)),
+        })
     }
 
     /// Return the current schema version recorded in the `kv` table.
     pub fn schema_version(&self) -> Result<u32, HistoryError> {
         let guard = self.inner.blocking_lock();
-        let v: String = guard.query_row(
-            "SELECT value FROM kv WHERE key='schema_version'",
-            [],
-            |r| r.get(0),
-        )?;
+        let v: String =
+            guard.query_row("SELECT value FROM kv WHERE key='schema_version'", [], |r| {
+                r.get(0)
+            })?;
         v.parse()
             .map_err(|_| HistoryError::Corruption("schema_version not a number".into()))
     }
@@ -55,7 +56,12 @@ impl History {
                     kind=excluded.kind, title=excluded.title, username=excluded.username, \
                     last_seen=excluded.last_seen",
                 rusqlite::params![
-                    c.chat_id, c.kind.as_sql(), c.title, c.username, c.first_seen, c.last_seen
+                    c.chat_id,
+                    c.kind.as_sql(),
+                    c.title,
+                    c.username,
+                    c.first_seen,
+                    c.last_seen
                 ],
             )?;
             Ok(())
@@ -142,9 +148,18 @@ impl History {
                     media_meta=excluded.media_meta, direction=excluded.direction, \
                     raw=excluded.raw",
                 rusqlite::params![
-                    m.chat_id, m.message_id, m.date, m.from_id, m.from_name, m.reply_to,
-                    m.text, m.media_kind, m.media_file_id, media_meta_s,
-                    m.direction.as_sql(), raw_s,
+                    m.chat_id,
+                    m.message_id,
+                    m.date,
+                    m.from_id,
+                    m.from_name,
+                    m.reply_to,
+                    m.text,
+                    m.media_kind,
+                    m.media_file_id,
+                    media_meta_s,
+                    m.direction.as_sql(),
+                    raw_s,
                 ],
             )?;
             // Index the (possibly new) row into FTS.
@@ -209,9 +224,7 @@ impl History {
                     let direction = crate::Direction::from_sql(&dir_s).ok_or_else(|| {
                         HistoryError::Corruption(format!("bad direction: {dir_s}"))
                     })?;
-                    let media_meta = media_meta_s
-                        .map(|s| serde_json::from_str(&s))
-                        .transpose()?;
+                    let media_meta = media_meta_s.map(|s| serde_json::from_str(&s)).transpose()?;
                     let raw = serde_json::from_str(&raw_s)?;
                     Ok(crate::StoredMessage {
                         chat_id,
@@ -228,9 +241,10 @@ impl History {
                         raw,
                     })
                 }
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    Err(HistoryError::NotFound { chat_id, message_id })
-                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => Err(HistoryError::NotFound {
+                    chat_id,
+                    message_id,
+                }),
                 Err(e) => Err(HistoryError::Sqlite(e)),
             }
         })
@@ -254,88 +268,87 @@ impl History {
     ) -> Result<Vec<crate::StoredMessage>, HistoryError> {
         use std::fmt::Write as _;
         let conn = self.inner.clone();
-        tokio::task::spawn_blocking(
-            move || -> Result<Vec<crate::StoredMessage>, HistoryError> {
-                let guard = conn.blocking_lock();
-                let mut sql = String::from(
-                    "SELECT message_id, date, from_id, from_name, reply_to, text, \
+        tokio::task::spawn_blocking(move || -> Result<Vec<crate::StoredMessage>, HistoryError> {
+            let guard = conn.blocking_lock();
+            let mut sql = String::from(
+                "SELECT message_id, date, from_id, from_name, reply_to, text, \
                             media_kind, media_file_id, media_meta, direction, raw \
                      FROM messages WHERE chat_id = ?1",
-                );
-                let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(chat_id)];
-                if let Some(before) = before_message_id {
-                    write!(&mut sql, " AND message_id < ?{}", args.len() + 1).unwrap();
-                    args.push(Box::new(before));
-                }
-                if let Some(after) = after_message_id {
-                    write!(&mut sql, " AND message_id > ?{}", args.len() + 1).unwrap();
-                    args.push(Box::new(after));
-                }
-                write!(&mut sql, " ORDER BY message_id DESC LIMIT ?{}", args.len() + 1).unwrap();
-                args.push(Box::new(limit));
+            );
+            let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(chat_id)];
+            if let Some(before) = before_message_id {
+                write!(&mut sql, " AND message_id < ?{}", args.len() + 1).unwrap();
+                args.push(Box::new(before));
+            }
+            if let Some(after) = after_message_id {
+                write!(&mut sql, " AND message_id > ?{}", args.len() + 1).unwrap();
+                args.push(Box::new(after));
+            }
+            write!(
+                &mut sql,
+                " ORDER BY message_id DESC LIMIT ?{}",
+                args.len() + 1
+            )
+            .unwrap();
+            args.push(Box::new(limit));
 
-                let mut stmt = guard.prepare(&sql)?;
-                let param_refs: Vec<&dyn rusqlite::ToSql> =
-                    args.iter().map(AsRef::as_ref).collect();
-                let iter = stmt.query_map(rusqlite::params_from_iter(param_refs), |r| {
-                    let dir_s: String = r.get(9)?;
-                    let media_meta_s: Option<String> = r.get(8)?;
-                    let raw_s: String = r.get(10)?;
-                    Ok((
-                        r.get::<_, i64>(0)?, // message_id
-                        r.get::<_, i64>(1)?, // date
-                        r.get::<_, Option<i64>>(2)?,
-                        r.get::<_, Option<String>>(3)?,
-                        r.get::<_, Option<i64>>(4)?,
-                        r.get::<_, Option<String>>(5)?,
-                        r.get::<_, Option<String>>(6)?,
-                        r.get::<_, Option<String>>(7)?,
-                        media_meta_s,
-                        dir_s,
-                        raw_s,
-                    ))
-                })?;
+            let mut stmt = guard.prepare(&sql)?;
+            let param_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(AsRef::as_ref).collect();
+            let iter = stmt.query_map(rusqlite::params_from_iter(param_refs), |r| {
+                let dir_s: String = r.get(9)?;
+                let media_meta_s: Option<String> = r.get(8)?;
+                let raw_s: String = r.get(10)?;
+                Ok((
+                    r.get::<_, i64>(0)?, // message_id
+                    r.get::<_, i64>(1)?, // date
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                    media_meta_s,
+                    dir_s,
+                    raw_s,
+                ))
+            })?;
 
-                let mut out = Vec::new();
-                for row in iter {
-                    let (
-                        mid,
-                        date,
-                        from_id,
-                        from_name,
-                        reply_to,
-                        text,
-                        media_kind,
-                        media_file_id,
-                        media_meta_s,
-                        dir_s,
-                        raw_s,
-                    ) = row?;
-                    let direction = crate::Direction::from_sql(&dir_s).ok_or_else(|| {
-                        HistoryError::Corruption(format!("bad direction: {dir_s}"))
-                    })?;
-                    let media_meta = media_meta_s
-                        .map(|s| serde_json::from_str(&s))
-                        .transpose()?;
-                    let raw = serde_json::from_str(&raw_s)?;
-                    out.push(crate::StoredMessage {
-                        chat_id,
-                        message_id: mid,
-                        date,
-                        from_id,
-                        from_name,
-                        reply_to,
-                        text,
-                        media_kind,
-                        media_file_id,
-                        media_meta,
-                        direction,
-                        raw,
-                    });
-                }
-                Ok(out)
-            },
-        )
+            let mut out = Vec::new();
+            for row in iter {
+                let (
+                    mid,
+                    date,
+                    from_id,
+                    from_name,
+                    reply_to,
+                    text,
+                    media_kind,
+                    media_file_id,
+                    media_meta_s,
+                    dir_s,
+                    raw_s,
+                ) = row?;
+                let direction = crate::Direction::from_sql(&dir_s)
+                    .ok_or_else(|| HistoryError::Corruption(format!("bad direction: {dir_s}")))?;
+                let media_meta = media_meta_s.map(|s| serde_json::from_str(&s)).transpose()?;
+                let raw = serde_json::from_str(&raw_s)?;
+                out.push(crate::StoredMessage {
+                    chat_id,
+                    message_id: mid,
+                    date,
+                    from_id,
+                    from_name,
+                    reply_to,
+                    text,
+                    media_kind,
+                    media_file_id,
+                    media_meta,
+                    direction,
+                    raw,
+                });
+            }
+            Ok(out)
+        })
         .await?
     }
 
@@ -442,8 +455,7 @@ impl History {
             sql.push_str(" ORDER BY m.date DESC LIMIT 100");
 
             let mut stmt = guard.prepare(&sql)?;
-            let param_refs: Vec<&dyn rusqlite::ToSql> =
-                args.iter().map(AsRef::as_ref).collect();
+            let param_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(AsRef::as_ref).collect();
             let hits = stmt
                 .query_map(rusqlite::params_from_iter(param_refs), |r| {
                     Ok(crate::SearchHit {

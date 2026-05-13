@@ -192,7 +192,8 @@ async fn updater_enabled_flows_inbound_to_history_search() {
     let server = MockServer::start().await;
 
     // updater hits getUpdates — return one batch then empties.
-    Mock::given(method("POST")).and(path("/bot12345:fake/GetUpdates"))
+    Mock::given(method("POST"))
+        .and(path("/bot12345:fake/GetUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "ok": true,
             "result": [{
@@ -206,17 +207,21 @@ async fn updater_enabled_flows_inbound_to_history_search() {
             }]
         })))
         .up_to_n_times(1)
-        .mount(&server).await;
-    Mock::given(method("POST")).and(path("/bot12345:fake/GetUpdates"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/bot12345:fake/GetUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "ok": true, "result": []
         })))
-        .mount(&server).await;
+        .mount(&server)
+        .await;
 
     let dir = tempdir().unwrap();
     let cfg_path = dir.path().join("config.toml");
     let db_path = dir.path().join("h.db");
-    let cfg = format!(r#"
+    let cfg = format!(
+        r#"
 [bot]
 token = "12345:fake"
 api_base_url = "{}"
@@ -229,7 +234,10 @@ enabled = true
 poll_timeout_secs = 1
 
 [aliases]
-"#, server.uri(), db_path.display().to_string().replace('\\', "/"));
+"#,
+        server.uri(),
+        db_path.display().to_string().replace('\\', "/")
+    );
     std::fs::write(&cfg_path, cfg).unwrap();
 
     let mut client = McpClient::spawn(&binary_path(), &cfg_path);
@@ -237,10 +245,19 @@ poll_timeout_secs = 1
     // give updater a moment to consume the batch
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
 
-    let resp = client.call_tool("tg_history_search", serde_json::json!({
-        "query": "fingerprint"
-    }));
+    let resp = client.call_tool(
+        "tg_history_search",
+        serde_json::json!({
+            "query": "fingerprint"
+        }),
+    );
     let content = &resp["result"]["content"][0]["text"];
     let parsed: serde_json::Value = serde_json::from_str(content.as_str().unwrap()).unwrap();
-    assert!(parsed.as_array().unwrap().iter().any(|h| h["chat_id"] == 42));
+    assert!(
+        parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["chat_id"] == 42)
+    );
 }

@@ -381,8 +381,14 @@ impl ServerHandler for Server {
                     )
                     .await
                     .map_err(|e| client_err_to_mcp(&e))?;
-                mirror_outbound(&self.0.store, &sent, Some(&input.text), None, input.reply_to)
-                    .await?;
+                mirror_outbound(
+                    &self.0.store,
+                    &sent,
+                    Some(&input.text),
+                    None,
+                    input.reply_to,
+                )
+                .await?;
                 ok_json(&SendMessageOutput {
                     chat_id: sent.chat_id,
                     message_id: sent.message_id,

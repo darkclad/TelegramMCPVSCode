@@ -84,7 +84,10 @@ async fn edit_message_text_round_trip() {
         .mount(&server)
         .await;
     let client = TgClient::new("12345:fake".into(), Some(api_base)).unwrap();
-    let out = client.edit_message_text(42, 7, "edited", None).await.unwrap();
+    let out = client
+        .edit_message_text(42, 7, "edited", None)
+        .await
+        .unwrap();
     assert_eq!(out.message_id, 7);
 }
 
@@ -139,5 +142,8 @@ async fn chat_action_returns_ok() {
         .mount(&server)
         .await;
     let client = TgClient::new("12345:fake".into(), Some(api_base)).unwrap();
-    client.send_chat_action(42, teloxide::types::ChatAction::Typing).await.unwrap();
+    client
+        .send_chat_action(42, teloxide::types::ChatAction::Typing)
+        .await
+        .unwrap();
 }

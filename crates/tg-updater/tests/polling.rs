@@ -54,7 +54,11 @@ async fn updater_consumes_batch_persists_offset_and_messages() {
         allowed_update_kinds: vec!["message".into()],
         allowed_chats: None,
     };
-    let updater = Updater { client, store: store.clone(), config };
+    let updater = Updater {
+        client,
+        store: store.clone(),
+        config,
+    };
 
     let handle = tokio::spawn(updater.run());
     // give it time to process one batch
@@ -65,7 +69,10 @@ async fn updater_consumes_batch_persists_offset_and_messages() {
     let msg = store.get_message(42, 1).await.unwrap();
     assert_eq!(msg.text.as_deref(), Some("hello"));
     // offset persisted as 101 (last_update_id + 1)
-    assert_eq!(store.kv_get("update_offset").await.unwrap().as_deref(), Some("101"));
+    assert_eq!(
+        store.kv_get("update_offset").await.unwrap().as_deref(),
+        Some("101")
+    );
 }
 
 #[tokio::test]
@@ -98,7 +105,11 @@ async fn updater_drops_updates_from_disallowed_chats() {
         allowed_update_kinds: vec!["message".into()],
         allowed_chats: Some(vec![42]),
     };
-    let updater = Updater { client, store: store.clone(), config };
+    let updater = Updater {
+        client,
+        store: store.clone(),
+        config,
+    };
     let handle = tokio::spawn(updater.run());
     tokio::time::sleep(Duration::from_millis(300)).await;
     handle.abort();

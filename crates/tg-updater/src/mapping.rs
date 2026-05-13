@@ -103,9 +103,9 @@ fn extract_media(msg: &Value) -> (Option<String>, Option<String>, Option<Value>)
             // photos come as arrays; pick the largest by file_size.
             let (file_id, meta) = if key == "photo" {
                 if let Some(arr) = v.as_array() {
-                    let largest = arr.iter().max_by_key(|p| {
-                        p.get("file_size").and_then(Value::as_i64).unwrap_or(0)
-                    });
+                    let largest = arr
+                        .iter()
+                        .max_by_key(|p| p.get("file_size").and_then(Value::as_i64).unwrap_or(0));
                     match largest {
                         Some(p) => (
                             p.get("file_id").and_then(Value::as_str).map(str::to_string),

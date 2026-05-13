@@ -59,7 +59,9 @@ async fn upsert_chat_inserts_then_updates_last_seen() {
 async fn insert_message_roundtrip() {
     let (_d, h) = fresh();
     h.upsert_chat(&sample_chat()).await.unwrap();
-    h.insert_message(&sample_msg(1, "hello", Direction::In)).await.unwrap();
+    h.insert_message(&sample_msg(1, "hello", Direction::In))
+        .await
+        .unwrap();
     let got = h.get_message(100, 1).await.unwrap();
     assert_eq!(got.text.as_deref(), Some("hello"));
     assert_eq!(got.direction, Direction::In);
@@ -69,9 +71,13 @@ async fn insert_message_roundtrip() {
 async fn insert_message_idempotent_on_duplicate_pk() {
     let (_d, h) = fresh();
     h.upsert_chat(&sample_chat()).await.unwrap();
-    h.insert_message(&sample_msg(1, "hello", Direction::In)).await.unwrap();
+    h.insert_message(&sample_msg(1, "hello", Direction::In))
+        .await
+        .unwrap();
     // Same (chat_id, message_id) but different text — should overwrite
-    h.insert_message(&sample_msg(1, "edited", Direction::In)).await.unwrap();
+    h.insert_message(&sample_msg(1, "edited", Direction::In))
+        .await
+        .unwrap();
     let got = h.get_message(100, 1).await.unwrap();
     assert_eq!(got.text.as_deref(), Some("edited"));
 }
@@ -88,12 +94,17 @@ async fn messages_paginated_newest_first() {
     let (_d, h) = fresh();
     h.upsert_chat(&sample_chat()).await.unwrap();
     for i in 1..=5 {
-        h.insert_message(&sample_msg(i, &format!("m{i}"), Direction::In)).await.unwrap();
+        h.insert_message(&sample_msg(i, &format!("m{i}"), Direction::In))
+            .await
+            .unwrap();
     }
     let page = h.messages(100, None, None, 3).await.unwrap();
     assert_eq!(page.len(), 3);
     // newest-first: 5, 4, 3
-    assert_eq!(page.iter().map(|m| m.message_id).collect::<Vec<_>>(), vec![5, 4, 3]);
+    assert_eq!(
+        page.iter().map(|m| m.message_id).collect::<Vec<_>>(),
+        vec![5, 4, 3]
+    );
 }
 
 #[tokio::test]
@@ -101,11 +112,16 @@ async fn messages_before_cursor_is_exclusive() {
     let (_d, h) = fresh();
     h.upsert_chat(&sample_chat()).await.unwrap();
     for i in 1..=5 {
-        h.insert_message(&sample_msg(i, &format!("m{i}"), Direction::In)).await.unwrap();
+        h.insert_message(&sample_msg(i, &format!("m{i}"), Direction::In))
+            .await
+            .unwrap();
     }
     // before_message_id=3 → return ids strictly less than 3: 2, 1
     let page = h.messages(100, Some(3), None, 10).await.unwrap();
-    assert_eq!(page.iter().map(|m| m.message_id).collect::<Vec<_>>(), vec![2, 1]);
+    assert_eq!(
+        page.iter().map(|m| m.message_id).collect::<Vec<_>>(),
+        vec![2, 1]
+    );
 }
 
 #[tokio::test]
@@ -113,7 +129,9 @@ async fn list_chats_summarises_last_seen_and_count() {
     let (_d, h) = fresh();
     h.upsert_chat(&sample_chat()).await.unwrap();
     for i in 1..=3 {
-        h.insert_message(&sample_msg(i, &format!("m{i}"), Direction::In)).await.unwrap();
+        h.insert_message(&sample_msg(i, &format!("m{i}"), Direction::In))
+            .await
+            .unwrap();
     }
     let chats = h.list_chats().await.unwrap();
     assert_eq!(chats.len(), 1);

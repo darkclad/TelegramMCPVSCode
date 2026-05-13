@@ -1,7 +1,7 @@
 //! `SQLite` schema definition and migration runner.
 
 use crate::HistoryError;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 pub(crate) const CURRENT_VERSION: u32 = 1;
 
@@ -57,7 +57,11 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<u32, HistoryError> {
     let tx = conn.transaction()?;
     if current == 0 {
         tx.execute_batch(SCHEMA_V1)
-            .map_err(|e| HistoryError::Migration { from: 0, to: 1, source: e })?;
+            .map_err(|e| HistoryError::Migration {
+                from: 0,
+                to: 1,
+                source: e,
+            })?;
         tx.execute(
             "INSERT OR REPLACE INTO kv(key, value) VALUES ('schema_version', ?1)",
             params!["1"],
@@ -78,11 +82,9 @@ fn read_version(conn: &Connection) -> Result<u32, HistoryError> {
         return Ok(0);
     }
     let v: Option<String> = conn
-        .query_row(
-            "SELECT value FROM kv WHERE key='schema_version'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT value FROM kv WHERE key='schema_version'", [], |r| {
+            r.get(0)
+        })
         .ok();
     Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
 }

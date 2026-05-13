@@ -4,8 +4,8 @@
 //! stateless and cheaply cloneable; concrete send/get/download methods are
 //! added by later tasks in the implementation plan.
 
-pub mod error;
 mod client;
+pub mod error;
 
 pub use client::{BotIdentity, SentMessage, TgClient};
 pub use error::TgClientError;

@@ -186,7 +186,10 @@ impl TgClient {
     pub async fn delete_message(&self, chat_id: i64, message_id: i64) -> Result<(), TgClientError> {
         use teloxide::prelude::*;
         self.bot
-            .delete_message(ChatId(chat_id), teloxide::types::MessageId(message_id as i32))
+            .delete_message(
+                ChatId(chat_id),
+                teloxide::types::MessageId(message_id as i32),
+            )
             .await
             .map_err(map_teloxide_err)?;
         Ok(())
@@ -401,9 +404,14 @@ impl TgClient {
             let desc = resp["description"].as_str().unwrap_or("").to_string();
             if code == 429 {
                 let ra = resp["parameters"]["retry_after"].as_u64().unwrap_or(1) as u32;
-                return Err(TgClientError::RateLimited { retry_after_secs: ra });
+                return Err(TgClientError::RateLimited {
+                    retry_after_secs: ra,
+                });
             }
-            return Err(TgClientError::Api { code, description: desc });
+            return Err(TgClientError::Api {
+                code,
+                description: desc,
+            });
         }
         let arr = resp["result"]
             .as_array()
@@ -445,9 +453,7 @@ impl TgClient {
         // 1) getFile to learn the path. Leading `/` mirrors the Task 13
         // construction so `bot12345:...` is not misread as a URI scheme;
         // `GetFile` casing matches teloxide's method-URL convention.
-        let get_file_url = self
-            .api_base
-            .join(&format!("/bot{}/GetFile", self.token))?;
+        let get_file_url = self.api_base.join(&format!("/bot{}/GetFile", self.token))?;
         let client = reqwest::Client::new();
         let resp: serde_json::Value = client
             .post(get_file_url)

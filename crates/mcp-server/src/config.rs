@@ -21,7 +21,10 @@ pub struct Config {
     pub updater: UpdaterConfig,
     /// Retention policy for stored history.
     #[serde(default)]
-    #[allow(dead_code, reason = "consumed by retention enforcement in a later task")]
+    #[allow(
+        dead_code,
+        reason = "consumed by retention enforcement in a later task"
+    )]
     pub retention: RetentionConfig,
     /// Map of alias names to numeric chat ids.
     #[serde(default)]
@@ -90,7 +93,10 @@ fn default_allowed_kinds() -> Vec<String> {
 
 /// `[retention]` section: optional history-pruning policy.
 #[derive(Debug, Default, Deserialize)]
-#[allow(dead_code, reason = "consumed by retention enforcement in a later task")]
+#[allow(
+    dead_code,
+    reason = "consumed by retention enforcement in a later task"
+)]
 pub struct RetentionConfig {
     /// Drop messages older than this many days. `None` disables age-based pruning.
     pub max_age_days: Option<u64>,

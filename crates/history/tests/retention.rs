@@ -6,17 +6,30 @@ use serde_json::json;
 use tempfile::tempdir;
 
 fn chat(id: i64) -> ChatInfo {
-    ChatInfo { chat_id: id, kind: ChatKind::Private, title: None, username: None,
-               first_seen: 0, last_seen: 0 }
+    ChatInfo {
+        chat_id: id,
+        kind: ChatKind::Private,
+        title: None,
+        username: None,
+        first_seen: 0,
+        last_seen: 0,
+    }
 }
 
 fn msg(chat_id: i64, mid: i64, date: i64) -> StoredMessage {
     StoredMessage {
-        chat_id, message_id: mid, date,
-        from_id: None, from_name: None, reply_to: None,
+        chat_id,
+        message_id: mid,
+        date,
+        from_id: None,
+        from_name: None,
+        reply_to: None,
         text: Some(format!("m{mid}")),
-        media_kind: None, media_file_id: None, media_meta: None,
-        direction: Direction::In, raw: json!({}),
+        media_kind: None,
+        media_file_id: None,
+        media_meta: None,
+        direction: Direction::In,
+        raw: json!({}),
     }
 }
 
@@ -25,7 +38,10 @@ async fn kv_roundtrip() {
     let dir = tempdir().unwrap();
     let h = History::open(dir.path().join("h.db")).unwrap();
     h.kv_put("update_offset", "42").await.unwrap();
-    assert_eq!(h.kv_get("update_offset").await.unwrap().as_deref(), Some("42"));
+    assert_eq!(
+        h.kv_get("update_offset").await.unwrap().as_deref(),
+        Some("42")
+    );
     assert_eq!(h.kv_get("missing").await.unwrap(), None);
 }
 
