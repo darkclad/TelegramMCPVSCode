@@ -127,17 +127,32 @@ fn check_send_allowed(state: &State, chat_id: i64) -> Result<(), McpError> {
 /// Map a user-supplied `parse_mode` string to teloxide's [`ParseMode`].
 ///
 /// Recognises `"markdown"` and `"markdownv2"` (both map to `MarkdownV2`) and
-/// `"html"` case-insensitively. Anything else — including `None`, the empty
-/// string, or unknown variants — returns `None`, meaning no parse mode is
-/// applied and Telegram treats the body as plain text.
+/// `"html"` case-insensitively. Unknown values return `Err` so the caller
+/// surfaces a clear error rather than silently sending the message as
+/// plain text — consistent with how [`chat_action_from_str`] handles
+/// unknown chat actions.
 ///
 /// [`ParseMode`]: teloxide::types::ParseMode
-fn parse_parse_mode(s: &str) -> Option<teloxide::types::ParseMode> {
+fn parse_parse_mode(s: &str) -> Result<Option<teloxide::types::ParseMode>, String> {
     use teloxide::types::ParseMode;
     match s.to_ascii_lowercase().as_str() {
-        "markdown" | "markdownv2" => Some(ParseMode::MarkdownV2),
-        "html" => Some(ParseMode::Html),
-        _ => None,
+        "markdown" | "markdownv2" => Ok(Some(ParseMode::MarkdownV2)),
+        "html" => Ok(Some(ParseMode::Html)),
+        other => Err(format!("unknown parse_mode: {other}")),
+    }
+}
+
+/// Decode the optional `parse_mode` argument of a send/edit tool.
+///
+/// Returns `None` when the caller omitted the field, the resolved
+/// [`teloxide::types::ParseMode`] when they supplied a recognised value,
+/// and `McpError::invalid_params` when they supplied an unknown value.
+fn decode_parse_mode(
+    s: Option<&str>,
+) -> Result<Option<teloxide::types::ParseMode>, McpError> {
+    match s {
+        Some(v) => parse_parse_mode(v).map_err(|m| McpError::invalid_params(m, None)),
+        None => Ok(None),
     }
 }
 
@@ -370,7 +385,7 @@ impl ServerHandler for Server {
                 let input: SendMessageInput = parse_args(request.arguments.as_ref())?;
                 let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
                 check_send_allowed(&self.0, chat_id)?;
-                let parse_mode = input.parse_mode.as_deref().and_then(parse_parse_mode);
+                let parse_mode = decode_parse_mode(input.parse_mode.as_deref())?;
                 let sent = self
                     .0
                     .bot
@@ -402,7 +417,7 @@ impl ServerHandler for Server {
                 let input: SendPhotoInput = parse_args(request.arguments.as_ref())?;
                 let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
                 check_send_allowed(&self.0, chat_id)?;
-                let pm = input.parse_mode.as_deref().and_then(parse_parse_mode);
+                let pm = decode_parse_mode(input.parse_mode.as_deref())?;
                 let sent = self
                     .0
                     .bot
@@ -456,7 +471,7 @@ impl ServerHandler for Server {
                 let input: EditMessageInput = parse_args(request.arguments.as_ref())?;
                 let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
                 check_send_allowed(&self.0, chat_id)?;
-                let pm = input.parse_mode.as_deref().and_then(parse_parse_mode);
+                let pm = decode_parse_mode(input.parse_mode.as_deref())?;
                 let sent = self
                     .0
                     .bot
