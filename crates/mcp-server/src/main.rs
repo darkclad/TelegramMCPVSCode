@@ -30,8 +30,10 @@ use tracing_subscriber::EnvFilter;
 use crate::config::Config;
 use crate::error::{alias_err_to_mcp, client_err_to_mcp, history_err_to_mcp};
 use crate::tools_io::{
-    BotWhoamiInput, ChatActionInput, DeleteMessageInput, EditMessageInput, ForwardMessageInput,
-    ListAliasesInput, SendDocumentInput, SendMessageInput, SendMessageOutput, SendPhotoInput,
+    BotWhoamiInput, ChatActionInput, DeleteMessageInput, DownloadInput, EditMessageInput,
+    ForwardMessageInput, GetChatInput, GetMessageInput, HistoryMessagesInput, HistorySearchInput,
+    ListAliasesInput, ListChatsInput, MarkReadInput, SendDocumentInput, SendMessageInput,
+    SendMessageOutput, SendPhotoInput,
 };
 
 use aliases::{Aliases, ChatRef};
@@ -293,6 +295,45 @@ impl ServerHandler for Server {
                      upload_video_note",
                     schema_obj::<ChatActionInput>(),
                 ),
+                tool(
+                    "tg_history_list_chats",
+                    "List chats the bot has seen, with last-message timestamp + unread count.",
+                    schema_obj::<ListChatsInput>(),
+                ),
+                tool(
+                    "tg_history_get_chat",
+                    "Return metadata for one chat: kind, title, username, first/last seen.",
+                    schema_obj::<GetChatInput>(),
+                ),
+                tool(
+                    "tg_history_messages",
+                    "Paginated messages from a chat, newest-first. before_message_id and \
+                     after_message_id are message-id cursors, exclusive. limit defaults to 50.",
+                    schema_obj::<HistoryMessagesInput>(),
+                ),
+                tool(
+                    "tg_history_search",
+                    "Full-text search across stored messages (FTS5). Optionally scope to a chat \
+                     or time window (unix seconds).",
+                    schema_obj::<HistorySearchInput>(),
+                ),
+                tool(
+                    "tg_history_get_message",
+                    "Fetch a single stored message by (chat, message_id).",
+                    schema_obj::<GetMessageInput>(),
+                ),
+                tool(
+                    "tg_history_mark_read",
+                    "Move the local unread baseline to this message_id, so subsequent \
+                     list_chats reports unread_count from there forward.",
+                    schema_obj::<MarkReadInput>(),
+                ),
+                tool(
+                    "tg_history_download",
+                    "Download the media attached to a stored message to a local path. Uses the \
+                     stored Telegram file_id; fetches bytes from the Bot API on demand.",
+                    schema_obj::<DownloadInput>(),
+                ),
             ],
             next_cursor: None,
         })
@@ -466,6 +507,113 @@ impl ServerHandler for Server {
                     .await
                     .map_err(|e| client_err_to_mcp(&e))?;
                 ok_json(&serde_json::json!({ "ok": true }))
+            }
+            "tg_history_list_chats" => {
+                let _: ListChatsInput = parse_args(request.arguments.as_ref())?;
+                let chats = self
+                    .0
+                    .store
+                    .list_chats()
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                ok_json(&chats)
+            }
+            "tg_history_get_chat" => {
+                let input: GetChatInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                let c = self
+                    .0
+                    .store
+                    .get_chat(chat_id)
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                match c {
+                    Some(info) => ok_json(&info),
+                    None => Err(McpError::invalid_params(
+                        format!("chat {chat_id} not in history"),
+                        None,
+                    )),
+                }
+            }
+            "tg_history_messages" => {
+                let input: HistoryMessagesInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                let msgs = self
+                    .0
+                    .store
+                    .messages(
+                        chat_id,
+                        input.before_message_id,
+                        input.after_message_id,
+                        input.limit,
+                    )
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                ok_json(&msgs)
+            }
+            "tg_history_search" => {
+                let input: HistorySearchInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = match &input.chat {
+                    Some(r) => Some(resolve_chat(&self.0.aliases, r)?),
+                    None => None,
+                };
+                let hits = self
+                    .0
+                    .store
+                    .search(&input.query, chat_id, input.since, input.until)
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                ok_json(&hits)
+            }
+            "tg_history_get_message" => {
+                let input: GetMessageInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                let m = self
+                    .0
+                    .store
+                    .get_message(chat_id, input.message_id)
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                ok_json(&m)
+            }
+            "tg_history_mark_read" => {
+                let input: MarkReadInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                self.0
+                    .store
+                    .mark_read(chat_id, input.up_to_message_id)
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                ok_json(&serde_json::json!({
+                    "chat_id": chat_id,
+                    "baseline": input.up_to_message_id,
+                }))
+            }
+            "tg_history_download" => {
+                let input: DownloadInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                let m = self
+                    .0
+                    .store
+                    .get_message(chat_id, input.message_id)
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                let file_id = m.media_file_id.as_deref().ok_or_else(|| {
+                    McpError::invalid_params(
+                        format!("message {chat_id}/{} has no media", input.message_id),
+                        None,
+                    )
+                })?;
+                let bytes = self
+                    .0
+                    .bot
+                    .download_file(file_id, &input.dest_path)
+                    .await
+                    .map_err(|e| client_err_to_mcp(&e))?;
+                ok_json(&serde_json::json!({
+                    "dest_path": input.dest_path,
+                    "bytes": bytes,
+                }))
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),

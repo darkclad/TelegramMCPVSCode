@@ -6,8 +6,6 @@
 //! and `ListAliasesInput`; the remaining types land in subsequent tool
 //! tasks.
 
-#![allow(dead_code, reason = "remaining tools land in Tasks 19-21")]
-
 use aliases::ChatRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
