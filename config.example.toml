@@ -1,0 +1,35 @@
+# TelegramMCP example configuration.
+# Copy to `config.toml` (which is gitignored) and edit.
+
+[bot]
+# Prefer the env var. The bot token is never logged.
+token_env = "TELEGRAM_BOT_TOKEN"
+# token = "123456:ABC..."          # inline alternative; warning logged
+# api_base_url = "https://api.telegram.org"   # override for tests
+
+[storage]
+# SQLite history database. Parent directory must exist.
+path = "C:/Users/user/AppData/Local/TelegramMCP/history.db"
+
+[updater]
+enabled = true
+poll_timeout_secs = 30
+allowed_update_kinds = [
+  "message", "edited_message",
+  "channel_post", "edited_channel_post",
+]
+
+# [retention]
+# max_age_days = 365
+# max_messages_total = 1000000
+
+[aliases]
+me = 12345678
+alerts = -1001234567890
+"team-eng" = -1009876543210
+
+[access]
+# Inbound: drop updates from chats not in this list. Empty = open.
+allowed_chats = ["me", "alerts", "team-eng"]
+# Outbound: refuse tg_send_* targeting chats not in this list. Empty = unrestricted.
+allowed_send_targets = []
