@@ -397,4 +397,65 @@ impl History {
         })
         .await?
     }
+
+    /// Full-text search the message store, returning up to 100 hits ordered
+    /// newest-first.
+    ///
+    /// `query` is passed to FTS5's `MATCH` operator, so callers can use the
+    /// full FTS5 query syntax (prefix, phrase, boolean, ...). The optional
+    /// `chat_id` restricts results to a single chat; `since` and `until` are
+    /// inclusive unix-timestamp bounds on the message `date`. Each
+    /// [`crate::SearchHit`] carries a `snippet` highlighting the match with
+    /// `[` ... `]` delimiters and `…` ellipses.
+    pub async fn search(
+        &self,
+        query: &str,
+        chat_id: Option<i64>,
+        since: Option<i64>,
+        until: Option<i64>,
+    ) -> Result<Vec<crate::SearchHit>, HistoryError> {
+        use std::fmt::Write as _;
+        let conn = self.inner.clone();
+        let q = query.to_string();
+        tokio::task::spawn_blocking(move || -> Result<Vec<crate::SearchHit>, HistoryError> {
+            let guard = conn.blocking_lock();
+            let mut sql = String::from(
+                "SELECT m.chat_id, m.message_id, m.date, \
+                        snippet(messages_fts, 0, '[', ']', '…', 10) AS snip \
+                 FROM messages_fts \
+                 JOIN messages m ON m.rowid = messages_fts.rowid \
+                 WHERE messages_fts MATCH ?1",
+            );
+            let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(q)];
+            if let Some(c) = chat_id {
+                write!(&mut sql, " AND m.chat_id = ?{}", args.len() + 1).unwrap();
+                args.push(Box::new(c));
+            }
+            if let Some(s) = since {
+                write!(&mut sql, " AND m.date >= ?{}", args.len() + 1).unwrap();
+                args.push(Box::new(s));
+            }
+            if let Some(u) = until {
+                write!(&mut sql, " AND m.date <= ?{}", args.len() + 1).unwrap();
+                args.push(Box::new(u));
+            }
+            sql.push_str(" ORDER BY m.date DESC LIMIT 100");
+
+            let mut stmt = guard.prepare(&sql)?;
+            let param_refs: Vec<&dyn rusqlite::ToSql> =
+                args.iter().map(AsRef::as_ref).collect();
+            let hits = stmt
+                .query_map(rusqlite::params_from_iter(param_refs), |r| {
+                    Ok(crate::SearchHit {
+                        chat_id: r.get(0)?,
+                        message_id: r.get(1)?,
+                        date: r.get(2)?,
+                        snippet: r.get(3)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(hits)
+        })
+        .await?
+    }
 }
