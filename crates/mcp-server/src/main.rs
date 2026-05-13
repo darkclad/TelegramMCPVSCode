@@ -168,15 +168,21 @@ fn chat_action_from_str(s: &str) -> Option<teloxide::types::ChatAction> {
 /// Mirror an outbound Bot API success into local history.
 ///
 /// Used by every send-side tool (`tg_send_message`, `tg_send_photo`, ...) so
-/// that messages we originate appear in history with `direction = 'out'`. The
-/// helper upserts a placeholder [`ChatInfo`] (overwritten on the next inbound
-/// update) and then writes a single [`StoredMessage`] row. `text` is the
-/// optional plain-text body or caption, `media_kind` is the media tag (e.g.
-/// `"photo"`, `"document"`), and `reply_to` propagates `reply_to_message_id`
-/// when the caller knows it — the Bot API's send response does not always
-/// echo it back.
+/// that messages we originate appear in history with `direction = 'out'`.
+/// The helper bumps `last_seen` on an existing chat row via
+/// [`History::touch_chat_last_seen`] (it does not create one — we have no
+/// reliable [`history::ChatKind`] for send-only chats) and then writes a
+/// single [`StoredMessage`] row. `text` is the optional plain-text body or
+/// caption, `media_kind` is the media tag (e.g. `"photo"`, `"document"`),
+/// and `reply_to` propagates `reply_to_message_id` when the caller knows
+/// it — the Bot API's send response does not always echo it back.
 ///
-/// [`ChatInfo`]: history::ChatInfo
+/// The chat row is created the first time an inbound update arrives via
+/// the updater, at which point the real [`history::ChatKind`] is known.
+/// Outbound-only chats therefore do not appear in `tg_history_list_chats`
+/// until an inbound message arrives — matching the spec's intent that
+/// `list_chats` reports chats the bot has interacted with.
+///
 /// [`StoredMessage`]: history::StoredMessage
 async fn mirror_outbound(
     store: &History,
@@ -185,16 +191,8 @@ async fn mirror_outbound(
     media_kind: Option<&str>,
     reply_to: Option<i64>,
 ) -> Result<(), McpError> {
-    let chat_info = history::ChatInfo {
-        chat_id: sent.chat_id,
-        kind: history::ChatKind::Private, // overwritten on next inbound update
-        title: None,
-        username: None,
-        first_seen: sent.date,
-        last_seen: sent.date,
-    };
     store
-        .upsert_chat(&chat_info)
+        .touch_chat_last_seen(sent.chat_id, sent.date)
         .await
         .map_err(|e| history_err_to_mcp(&e))?;
     store

@@ -125,6 +125,28 @@ async fn messages_before_cursor_is_exclusive() {
 }
 
 #[tokio::test]
+async fn touch_chat_last_seen_updates_existing_row() {
+    let (_d, h) = fresh();
+    h.upsert_chat(&sample_chat()).await.unwrap(); // first_seen=1000, last_seen=1000
+    h.touch_chat_last_seen(100, 3_000).await.unwrap();
+    let got = h.get_chat(100).await.unwrap().unwrap();
+    assert_eq!(got.last_seen, 3_000);
+    // first_seen must NOT be overwritten
+    assert_eq!(got.first_seen, 1_000);
+    // kind/title/username preserved from the original upsert
+    assert_eq!(got.kind, ChatKind::Private);
+    assert_eq!(got.title.as_deref(), Some("alice"));
+}
+
+#[tokio::test]
+async fn touch_chat_last_seen_is_noop_for_missing_chat() {
+    let (_d, h) = fresh();
+    // No row exists for chat 999; touch must succeed and create nothing.
+    h.touch_chat_last_seen(999, 5_000).await.unwrap();
+    assert!(h.get_chat(999).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn list_chats_summarises_last_seen_and_count() {
     let (_d, h) = fresh();
     h.upsert_chat(&sample_chat()).await.unwrap();

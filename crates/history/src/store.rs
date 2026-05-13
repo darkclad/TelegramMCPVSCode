@@ -69,6 +69,34 @@ impl History {
         .await?
     }
 
+    /// Update `last_seen` on an existing chat row; does **not** create one.
+    ///
+    /// Used by the outbound mirror in `mcp-server`, which has no reliable way
+    /// to know the chat kind for a send-only chat (e.g. an alerts channel
+    /// the bot only posts to). The chat row is created on the first inbound
+    /// update via [`Self::upsert_chat`], at which point the real
+    /// [`crate::ChatKind`] is known; outbound sends just bump `last_seen`.
+    ///
+    /// Returns `Ok(())` whether or not a row matched — callers can rely on
+    /// this being a no-op for chats not yet in the history.
+    pub async fn touch_chat_last_seen(
+        &self,
+        chat_id: i64,
+        last_seen: i64,
+    ) -> Result<(), HistoryError> {
+        let conn = self.inner.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), HistoryError> {
+            let guard = conn.blocking_lock();
+            // `execute` returns rows-affected; we deliberately ignore it.
+            guard.execute(
+                "UPDATE chats SET last_seen = ?2 WHERE chat_id = ?1",
+                rusqlite::params![chat_id, last_seen],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
     /// Look up a chat by its Telegram `chat_id`. Returns `Ok(None)` when no
     /// such row exists.
     pub async fn get_chat(&self, chat_id: i64) -> Result<Option<crate::ChatInfo>, HistoryError> {
