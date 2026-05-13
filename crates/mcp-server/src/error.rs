@@ -22,7 +22,6 @@ pub fn client_err_to_mcp(e: &tg_client::TgClientError) -> McpError {
 }
 
 /// Translate a [`history::HistoryError`] into an [`McpError`].
-#[allow(dead_code, reason = "consumed by history tools landing in Tasks 19-21")]
 pub fn history_err_to_mcp(e: &history::HistoryError) -> McpError {
     use history::HistoryError as E;
     let msg = e.to_string();

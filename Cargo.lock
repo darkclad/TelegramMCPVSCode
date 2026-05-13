@@ -1106,6 +1106,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "teloxide",
  "tempfile",
  "tg-client",
  "tg-updater",

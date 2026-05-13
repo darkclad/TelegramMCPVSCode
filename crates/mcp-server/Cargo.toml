@@ -21,6 +21,7 @@ tg-updater = { workspace = true }
 
 rmcp = { workspace = true }
 schemars = { workspace = true }
+teloxide = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

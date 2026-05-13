@@ -28,8 +28,8 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
-use crate::error::{alias_err_to_mcp, client_err_to_mcp};
-use crate::tools_io::{BotWhoamiInput, ListAliasesInput};
+use crate::error::{alias_err_to_mcp, client_err_to_mcp, history_err_to_mcp};
+use crate::tools_io::{BotWhoamiInput, ListAliasesInput, SendMessageInput, SendMessageOutput};
 
 use aliases::{Aliases, ChatRef};
 use history::History;
@@ -41,12 +41,10 @@ struct State {
     /// Outbound Telegram Bot API client.
     bot: TgClient,
     /// Local message history store.
-    #[allow(dead_code, reason = "consumed by history tools landing in Tasks 19-21")]
     store: History,
     /// Chat-name alias table loaded from `[aliases]`.
     aliases: Aliases,
     /// Resolved allow-list for send tools. `None` means unrestricted.
-    #[allow(dead_code, reason = "consumed by send tools landing in Tasks 19-21")]
     allowed_send_targets: Option<Vec<i64>>,
 }
 
@@ -104,13 +102,11 @@ fn ok_json<T: serde::Serialize>(v: &T) -> Result<CallToolResult, McpError> {
 }
 
 /// Resolve a [`ChatRef`] against the configured alias table.
-#[allow(dead_code, reason = "consumed by chat tools landing in Tasks 19-21")]
 fn resolve_chat(aliases: &Aliases, r: &ChatRef) -> Result<i64, McpError> {
     aliases.resolve(r).map_err(|e| alias_err_to_mcp(&e))
 }
 
 /// Enforce the `[access] allowed_send_targets` allow-list for outbound tools.
-#[allow(dead_code, reason = "consumed by send tools landing in Tasks 19-21")]
 fn check_send_allowed(state: &State, chat_id: i64) -> Result<(), McpError> {
     if let Some(list) = &state.allowed_send_targets {
         if !list.contains(&chat_id) {
@@ -121,6 +117,23 @@ fn check_send_allowed(state: &State, chat_id: i64) -> Result<(), McpError> {
         }
     }
     Ok(())
+}
+
+/// Map a user-supplied `parse_mode` string to teloxide's [`ParseMode`].
+///
+/// Recognises `"markdown"` and `"markdownv2"` (both map to `MarkdownV2`) and
+/// `"html"` case-insensitively. Anything else — including `None`, the empty
+/// string, or unknown variants — returns `None`, meaning no parse mode is
+/// applied and Telegram treats the body as plain text.
+///
+/// [`ParseMode`]: teloxide::types::ParseMode
+fn parse_parse_mode(s: &str) -> Option<teloxide::types::ParseMode> {
+    use teloxide::types::ParseMode;
+    match s.to_ascii_lowercase().as_str() {
+        "markdown" | "markdownv2" => Some(ParseMode::MarkdownV2),
+        "html" => Some(ParseMode::Html),
+        _ => None,
+    }
 }
 
 impl ServerHandler for Server {
@@ -157,6 +170,13 @@ impl ServerHandler for Server {
                     "Return configured chat-name -> chat_id map.",
                     schema_obj::<ListAliasesInput>(),
                 ),
+                tool(
+                    "tg_send_message",
+                    "Send a text message to a chat. `chat` accepts a numeric chat_id or a \
+                     configured alias. Returns the sent message id + date. The message is also \
+                     written to local history with direction='out'.",
+                    schema_obj::<SendMessageInput>(),
+                ),
             ],
             next_cursor: None,
         })
@@ -181,6 +201,62 @@ impl ServerHandler for Server {
             "tg_bot_list_aliases" => {
                 let _: ListAliasesInput = parse_args(request.arguments.as_ref())?;
                 ok_json(self.0.aliases.as_map())
+            }
+            "tg_send_message" => {
+                let input: SendMessageInput = parse_args(request.arguments.as_ref())?;
+                let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                check_send_allowed(&self.0, chat_id)?;
+                let parse_mode = input.parse_mode.as_deref().and_then(parse_parse_mode);
+                let sent = self
+                    .0
+                    .bot
+                    .send_message(
+                        chat_id,
+                        &input.text,
+                        parse_mode,
+                        input.reply_to,
+                        input.silent.unwrap_or(false),
+                        input.link_preview.unwrap_or(true),
+                    )
+                    .await
+                    .map_err(|e| client_err_to_mcp(&e))?;
+                // Mirror into history as direction='out'.
+                let chat_info = history::ChatInfo {
+                    chat_id: sent.chat_id,
+                    kind: history::ChatKind::Private, // overwritten on next inbound update
+                    title: None,
+                    username: None,
+                    first_seen: sent.date,
+                    last_seen: sent.date,
+                };
+                self.0
+                    .store
+                    .upsert_chat(&chat_info)
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                self.0
+                    .store
+                    .insert_message(&history::StoredMessage {
+                        chat_id: sent.chat_id,
+                        message_id: sent.message_id,
+                        date: sent.date,
+                        from_id: None,
+                        from_name: None,
+                        reply_to: input.reply_to,
+                        text: Some(input.text.clone()),
+                        media_kind: None,
+                        media_file_id: None,
+                        media_meta: None,
+                        direction: history::Direction::Out,
+                        raw: serde_json::json!({ "outbound": true }),
+                    })
+                    .await
+                    .map_err(|e| history_err_to_mcp(&e))?;
+                ok_json(&SendMessageOutput {
+                    chat_id: sent.chat_id,
+                    message_id: sent.message_id,
+                    date: sent.date,
+                })
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
