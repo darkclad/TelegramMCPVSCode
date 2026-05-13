@@ -1,12 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/aliases",
-    "crates/history",
-    "crates/tg-client",
-    "crates/tg-updater",
-    "crates/mcp-server",
-]
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.0.1"
