@@ -147,9 +147,7 @@ fn parse_parse_mode(s: &str) -> Result<Option<teloxide::types::ParseMode>, Strin
 /// Returns `None` when the caller omitted the field, the resolved
 /// [`teloxide::types::ParseMode`] when they supplied a recognised value,
 /// and `McpError::invalid_params` when they supplied an unknown value.
-fn decode_parse_mode(
-    s: Option<&str>,
-) -> Result<Option<teloxide::types::ParseMode>, McpError> {
+fn decode_parse_mode(s: Option<&str>) -> Result<Option<teloxide::types::ParseMode>, McpError> {
     match s {
         Some(v) => parse_parse_mode(v).map_err(|m| McpError::invalid_params(m, None)),
         None => Ok(None),
