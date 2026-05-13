@@ -232,6 +232,10 @@ impl ServerHandler for Server {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "tool registry; per-tool entries read better as one flat list"
+    )]
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParam>,
@@ -306,7 +310,8 @@ impl ServerHandler for Server {
                 tool(
                     "tg_history_messages",
                     "Paginated messages from a chat, newest-first. before_message_id and \
-                     after_message_id are message-id cursors, exclusive. limit defaults to 50.",
+                     after_message_id are message-id cursors, exclusive. limit defaults to 50, \
+                     clamped to [1, 500].",
                     schema_obj::<HistoryMessagesInput>(),
                 ),
                 tool(
@@ -539,6 +544,10 @@ impl ServerHandler for Server {
             "tg_history_messages" => {
                 let input: HistoryMessagesInput = parse_args(request.arguments.as_ref())?;
                 let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                // Clamp before hitting SQLite: `LIMIT -1` is "no limit" in
+                // SQLite, so an unbounded or negative input from a confused
+                // (or malicious) LLM could pull millions of rows.
+                let limit = input.limit.clamp(1, 500);
                 let msgs = self
                     .0
                     .store
@@ -546,7 +555,7 @@ impl ServerHandler for Server {
                         chat_id,
                         input.before_message_id,
                         input.after_message_id,
-                        input.limit,
+                        limit,
                     )
                     .await
                     .map_err(|e| history_err_to_mcp(&e))?;
