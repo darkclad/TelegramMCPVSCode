@@ -1,12 +1,13 @@
 //! Chat-name alias resolution.
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use thiserror::Error;
 
 /// Caller-supplied reference to a Telegram chat: either the raw numeric id
 /// or a name that resolves through configured aliases.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ChatRef {
     /// Raw numeric Telegram chat id.
