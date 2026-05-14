@@ -33,3 +33,7 @@ dirs = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 wiremock = { workspace = true }
+history = { workspace = true }
+uuid = { workspace = true }
+local-pipe = { workspace = true }
+tokio = { workspace = true }

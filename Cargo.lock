@@ -2239,6 +2239,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "dirs",
+ "history",
  "local-pipe",
  "serde",
  "serde_json",
@@ -2247,6 +2248,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "wiremock",
 ]
 
