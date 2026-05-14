@@ -4,5 +4,6 @@
 pub mod cli;
 pub mod discovery;
 pub mod mcp_client;
+pub mod poll;
 pub mod stop_input;
 pub mod wake;
