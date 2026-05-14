@@ -1,3 +1,5 @@
+//! Tests for the `CliArgs` argument parser.
+
 use tg_hook::cli::CliArgs;
 
 #[test]
