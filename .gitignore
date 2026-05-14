@@ -17,3 +17,6 @@ config.toml
 *.swp
 .DS_Store
 Thumbs.db
+
+# Local dev throwaways (hardcoded paths, not portable)
+/scripts/
