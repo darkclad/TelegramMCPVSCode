@@ -19,6 +19,8 @@ aliases = { workspace = true }
 history = { workspace = true }
 tg-client = { workspace = true }
 tg-updater = { workspace = true }
+local-pipe = { workspace = true }
+dirs = { workspace = true }
 
 rmcp = { workspace = true }
 schemars = { workspace = true }

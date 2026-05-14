@@ -680,12 +680,29 @@ fn parse_cli() -> Result<Option<PathBuf>> {
     reason = "linear startup wiring; splitting per-section obscures the flow"
 )]
 async fn main() -> Result<()> {
+    // Tracing goes to a per-PID log file under %LOCALAPPDATA%\TelegramMCP\logs\,
+    // NOT to stderr. Claude Code (and other MCP hosts) flag any byte on the
+    // server's stderr as an error, surfacing routine info logs as red UI
+    // popups. Sidestep entirely by writing to a file.
+    let log_file = dirs::data_local_dir().and_then(|base| {
+        let dir = base.join("TelegramMCP").join("logs");
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join(format!("telegrammcp-{}.log", std::process::id()));
+        std::fs::File::create(path).ok()
+    });
     let filter =
         EnvFilter::try_from_env("TELEGRAM_MCP_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
+    let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
+        .with_ansi(false);
+    if let Some(file) = log_file {
+        builder.with_writer(std::sync::Mutex::new(file)).init();
+    } else {
+        // No %LOCALAPPDATA% / no write perms. Tracing is effectively
+        // disabled (write to /dev/null equivalent) so we never pollute the
+        // host's stderr.
+        builder.with_writer(std::io::sink).init();
+    }
 
     let config_path = parse_cli()?.context("--config <path> is required")?;
     let cfg = Config::load(&config_path)?;
@@ -743,6 +760,33 @@ async fn main() -> Result<()> {
     }
 
     let server = Server(state);
+
+    // Spawn the local named-pipe server in parallel. Hooks and other local
+    // processes that find this MCP instance's discovery file can connect over
+    // the pipe and speak the same MCP JSON-RPC we serve on stdio.
+    let server_for_pipe = server.clone();
+    let pipe_handler: local_pipe::ConnHandler = std::sync::Arc::new(move |pipe| {
+        let s = server_for_pipe.clone();
+        Box::pin(async move {
+            // The pipe is positioned right after the `AUTH <token>\n` line.
+            // rmcp's transport accepts any AsyncRead+AsyncWrite; the named
+            // pipe handle is both, so we hand it straight in.
+            match s.serve(pipe).await {
+                Ok(service) => {
+                    if let Err(e) = service.waiting().await {
+                        tracing::warn!(error = %e, "pipe MCP session ended with error");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "pipe MCP serve() failed"),
+            }
+        })
+    });
+    tokio::spawn(async move {
+        if let Err(e) = local_pipe::run_pipe_server(pipe_handler).await {
+            tracing::error!(error = %e, "local pipe server terminated");
+        }
+    });
+
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

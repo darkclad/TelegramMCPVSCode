@@ -18,7 +18,7 @@ pub struct CliArgs {
     /// Default 3600s (60 minutes), matching settings.json hook `timeout`.
     pub timeout_secs: u64,
     /// History-poll interval. Default 5s — small enough for snappy reply
-    /// pickup, large enough not to hammer SQLite.
+    /// pickup, large enough not to hammer `SQLite`.
     pub poll_secs: u64,
 }
 
