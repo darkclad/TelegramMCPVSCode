@@ -85,3 +85,78 @@ async fn search_scopes_by_chat_when_set() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].chat_id, 1);
 }
+
+#[tokio::test]
+async fn search_handles_special_chars_in_query() {
+    let dir = tempdir().unwrap();
+    let h = History::open(dir.path().join("h.db")).unwrap();
+    h.upsert_chat(&ChatInfo {
+        chat_id: 1,
+        kind: ChatKind::Private,
+        title: None,
+        username: None,
+        first_seen: 0,
+        last_seen: 0,
+    })
+    .await
+    .unwrap();
+    h.insert_message(&StoredMessage {
+        chat_id: 1,
+        message_id: 1,
+        date: 0,
+        from_id: None,
+        from_name: None,
+        reply_to: None,
+        text: Some("hello zebra-fingerprint world".into()),
+        media_kind: None,
+        media_file_id: None,
+        media_meta: None,
+        direction: Direction::In,
+        raw: json!({}),
+    })
+    .await
+    .unwrap();
+
+    // Before the fix, FTS5 would parse "zebra-fingerprint" as
+    // "look in column 'zebra' for token 'fingerprint'" and error.
+    let hits = h
+        .search("zebra-fingerprint", None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].snippet.to_lowercase().contains("zebra"));
+}
+
+#[tokio::test]
+async fn search_handles_colon_in_query() {
+    let dir = tempdir().unwrap();
+    let h = History::open(dir.path().join("h.db")).unwrap();
+    h.upsert_chat(&ChatInfo {
+        chat_id: 1,
+        kind: ChatKind::Private,
+        title: None,
+        username: None,
+        first_seen: 0,
+        last_seen: 0,
+    })
+    .await
+    .unwrap();
+    h.insert_message(&StoredMessage {
+        chat_id: 1,
+        message_id: 1,
+        date: 0,
+        from_id: None,
+        from_name: None,
+        reply_to: None,
+        text: Some("status check: ok".into()),
+        media_kind: None,
+        media_file_id: None,
+        media_meta: None,
+        direction: Direction::In,
+        raw: json!({}),
+    })
+    .await
+    .unwrap();
+    let hits = h.search("status check:", None, None, None).await.unwrap();
+    assert_eq!(hits.len(), 1);
+}

@@ -6,6 +6,14 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// Wrap a user-supplied search query as an FTS5 phrase so special chars
+/// (-, :, *, ^, etc.) are treated as literal text. Internal double quotes
+/// are escaped per FTS5 syntax.
+fn fts_phrase_escape(s: &str) -> String {
+    let escaped = s.replace('"', "\"\"");
+    format!("\"{escaped}\"")
+}
+
 /// Handle to the local `SQLite`-backed message history store.
 ///
 /// Cheap to clone — internally an [`Arc`] around the underlying connection.
@@ -457,7 +465,7 @@ impl History {
     ) -> Result<Vec<crate::SearchHit>, HistoryError> {
         use std::fmt::Write as _;
         let conn = self.inner.clone();
-        let q = query.to_string();
+        let q = fts_phrase_escape(query);
         tokio::task::spawn_blocking(move || -> Result<Vec<crate::SearchHit>, HistoryError> {
             let guard = conn.blocking_lock();
             let mut sql = String::from(
