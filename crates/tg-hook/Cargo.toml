@@ -10,6 +10,10 @@ publish = false
 [lints]
 workspace = true
 
+[lib]
+name = "tg_hook"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tg-hook"
 path = "src/main.rs"
