@@ -15,6 +15,21 @@ pub struct Baseline {
     pub sent_message_id: i64,
 }
 
+/// Send a brief acknowledgement back to the user in Telegram.
+///
+/// Called right after detecting an inbound reply, before returning the block
+/// decision, so the user has immediate feedback that Claude saw their message.
+/// Errors are intentionally swallowed — the block decision must go through
+/// even if the ack fails.
+pub async fn send_ack(client: &mut McpClient, chat: &str) {
+    let _ = client
+        .call_tool(
+            "tg_send_message",
+            json!({ "chat": chat, "text": "Got it, working on it..." }),
+        )
+        .await;
+}
+
 /// Call `tg_send_message` with the provided chat + text, return the
 /// baseline encoded in the response.
 pub async fn send_wakeup(client: &mut McpClient, chat: &str, text: &str) -> Result<Baseline> {

@@ -11,7 +11,7 @@ use tg_hook::mcp_client::McpClient;
 use tg_hook::output::{DEFAULT_RETRY_MESSAGE, emit_block, emit_status};
 use tg_hook::poll::poll_once;
 use tg_hook::stop_input::StopInput;
-use tg_hook::wake::send_wakeup;
+use tg_hook::wake::{send_ack, send_wakeup};
 
 #[tokio::main]
 async fn main() {
@@ -95,6 +95,7 @@ async fn run() -> Result<()> {
                         let body = reply
                             .text
                             .unwrap_or_else(|| "(media-only message; no text)".into());
+                        send_ack(&mut client, &cli.chat).await;
                         emit_block(&format!("Telegram reply: {body}"));
                         return Ok(());
                     }
