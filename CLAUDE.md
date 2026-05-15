@@ -10,8 +10,42 @@ loop that captures incoming updates into a local SQLite history. Design in
 [docs/superpowers/specs/2026-05-13-telegram-mcp-design.md](docs/superpowers/specs/2026-05-13-telegram-mcp-design.md);
 implementation plan in [docs/superpowers/plans/2026-05-13-telegram-mcp.md](docs/superpowers/plans/2026-05-13-telegram-mcp.md).
 
-Single binary:
-- `TelegramMCP` — the MCP server. JSON-RPC over stdio.
+Binaries:
+- `TelegramMCP` — the MCP server. JSON-RPC over stdio. Also listens on
+  a per-instance Windows named pipe (`local-pipe`) so local processes
+  like `tg-hook` can call its tools without spawning a second server.
+- `tg-hook` — Claude Code Stop hook (Windows). Sends a wakeup to
+  Telegram, blocks polling history for the user's reply, and returns
+  it to Claude as `{"decision":"block","reason":"..."}`. On 60-minute
+  timeout, returns a configurable retry-message so Claude takes
+  another turn and the hook fires again. Ctrl+C in the Claude Code
+  UI releases the hook and lets the session stop normally.
+
+### Wiring tg-hook into Claude Code
+
+Add to `~/.claude/settings.json` (or the workspace's `.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:\\Programs\\user\\TelegramMCP\\tg-hook.exe --chat me --message \"Claude finished. Reply on Telegram to continue.\" --retry-message \"Still waiting on you.\" --timeout-secs 3600 --poll-secs 5",
+            "timeout": 3700
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`timeout` (seconds) must be larger than the hook's `--timeout-secs` or
+Claude Code will kill the hook before it can emit its retry-message.
 
 ## Common commands
 
