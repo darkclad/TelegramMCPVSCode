@@ -1,6 +1,8 @@
 //! Library surface for the `tg-hook` binary. Modules are exposed so
 //! integration tests in `crates/tg-hook/tests/` can drive them.
 
+#![cfg(windows)]
+
 pub mod cli;
 pub mod discovery;
 pub mod mcp_client;

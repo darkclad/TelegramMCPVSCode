@@ -10,7 +10,9 @@
 
 mod auth;
 pub mod discovery;
+pub mod process;
 pub mod server;
 
 pub use discovery::DiscoveryRecord;
+pub use process::pid_ancestry_chain;
 pub use server::{ConnHandler, PipeError, run_pipe_server};

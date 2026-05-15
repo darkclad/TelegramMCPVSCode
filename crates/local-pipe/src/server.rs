@@ -150,57 +150,7 @@ fn epoch_to_civil(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
 }
 
 fn parent_pid() -> u32 {
-    // Best-effort: query the process snapshot for our parent. We do this
-    // through a tiny inline Win32 call.
-    use std::mem::size_of;
-
-    #[repr(C)]
-    struct ProcessEntry32 {
-        dw_size: u32,
-        cnt_usage: u32,
-        th32_process_id: u32,
-        th32_default_heap_id: usize,
-        th32_module_id: u32,
-        cnt_threads: u32,
-        th32_parent_process_id: u32,
-        pc_pri_class_base: i32,
-        dw_flags: u32,
-        sz_exe_file: [u16; 260],
-    }
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut core::ffi::c_void;
-        fn Process32FirstW(snapshot: *mut core::ffi::c_void, entry: *mut ProcessEntry32) -> i32;
-        fn Process32NextW(snapshot: *mut core::ffi::c_void, entry: *mut ProcessEntry32) -> i32;
-        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
-    }
-
-    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if snapshot.is_null() || snapshot as isize == -1 {
-        return 0;
-    }
-    let mut entry: ProcessEntry32 = unsafe { std::mem::zeroed() };
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "ProcessEntry32 is small; size fits u32"
-    )]
-    {
-        entry.dw_size = size_of::<ProcessEntry32>() as u32;
-    }
-    let self_pid = std::process::id();
-    let mut ppid: u32 = 0;
-    let mut ok = unsafe { Process32FirstW(snapshot, &raw mut entry) };
-    while ok != 0 {
-        if entry.th32_process_id == self_pid {
-            ppid = entry.th32_parent_process_id;
-            break;
-        }
-        ok = unsafe { Process32NextW(snapshot, &raw mut entry) };
-    }
-    unsafe { CloseHandle(snapshot) };
-    ppid
+    crate::process::parent_pid()
 }
 
 /// RAII guard that removes the discovery file when dropped.

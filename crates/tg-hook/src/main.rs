@@ -1,6 +1,8 @@
 //! Claude Code Stop hook: bridges a Claude Code session to a Telegram
 //! chat. See module docs in `lib.rs` for the high-level flow.
 
+#![cfg(windows)]
+
 use anyhow::{Context, Result, anyhow};
 use std::time::Duration;
 use tg_hook::cli::CliArgs;
