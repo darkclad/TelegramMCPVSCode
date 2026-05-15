@@ -9,22 +9,17 @@ use serde_json::{Value, json};
 pub struct Reply {
     /// `message_id` of the inbound message.
     pub message_id: i64,
-    /// Best-effort text. None for media-only messages — caller decides
-    /// whether to surface "(media)" to Claude or keep waiting.
+    /// Best-effort text. None for media-only messages.
     pub text: Option<String>,
 }
 
-/// One poll: ask the server for messages after `after_message_id` in
-/// `chat`, return the OLDEST inbound message in the response, if any.
-///
-/// `chat` is whatever the user passed on the CLI (alias or numeric id) —
-/// the MCP server re-resolves on every call, which is fine for our
-/// once-every-5-seconds rate.
+/// One poll: return ALL inbound messages after `after_message_id`, sorted
+/// oldest-first. Empty vec means no new replies yet.
 pub async fn poll_once(
     client: &mut McpClient,
     chat: &str,
     after_message_id: i64,
-) -> Result<Option<Reply>> {
+) -> Result<Vec<Reply>> {
     let result = client
         .call_tool(
             "tg_history_messages",
@@ -45,26 +40,17 @@ pub async fn poll_once(
     let arr = parsed
         .as_array()
         .ok_or_else(|| anyhow!("tg_history_messages: expected JSON array"))?;
-    let oldest_in: Option<&Value> = arr
+    let mut replies: Vec<Reply> = arr
         .iter()
         .filter(|m| m.get("direction").and_then(Value::as_str) == Some("in"))
-        .min_by_key(|m| {
-            m.get("message_id")
-                .and_then(Value::as_i64)
-                .unwrap_or(i64::MAX)
-        });
-    let Some(m) = oldest_in else {
-        return Ok(None);
-    };
-    let message_id = m
-        .get("message_id")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| anyhow!("history row missing message_id"))?;
-    let message_text = m.get("text").and_then(Value::as_str).map(str::to_string);
-    Ok(Some(Reply {
-        message_id,
-        text: message_text,
-    }))
+        .filter_map(|m| {
+            let message_id = m.get("message_id").and_then(Value::as_i64)?;
+            let text = m.get("text").and_then(Value::as_str).map(str::to_string);
+            Some(Reply { message_id, text })
+        })
+        .collect();
+    replies.sort_by_key(|r| r.message_id);
+    Ok(replies)
 }
 
 #[cfg(test)]
@@ -81,27 +67,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn picks_oldest_inbound_only() {
-        // Two inbound messages + one outbound; we should get message_id=11.
+    async fn returns_all_inbound_sorted() {
+        // Two inbound + one outbound; both inbound returned, oldest first.
         let rows = json!([
             { "message_id": 13, "direction": "in",  "text": "third" },
             { "message_id": 12, "direction": "out", "text": "our send" },
             { "message_id": 11, "direction": "in",  "text": "first reply" }
         ]);
-        let parsed = rows;
-        let oldest_in = parsed
-            .as_array()
-            .unwrap()
+        let arr = rows.as_array().unwrap();
+        let mut replies: Vec<Reply> = arr
             .iter()
             .filter(|m| m.get("direction").and_then(Value::as_str) == Some("in"))
-            .min_by_key(|m| {
-                m.get("message_id")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(i64::MAX)
-            });
-        let m = oldest_in.unwrap();
-        assert_eq!(m["message_id"], 11);
-        assert_eq!(m["text"], "first reply");
+            .filter_map(|m| {
+                let message_id = m.get("message_id").and_then(Value::as_i64)?;
+                let text = m.get("text").and_then(Value::as_str).map(str::to_string);
+                Some(Reply { message_id, text })
+            })
+            .collect();
+        replies.sort_by_key(|r| r.message_id);
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0].message_id, 11);
+        assert_eq!(replies[0].text.as_deref(), Some("first reply"));
+        assert_eq!(replies[1].message_id, 13);
         let _ = fake_history_result;
     }
 }

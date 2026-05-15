@@ -99,20 +99,31 @@ async fn run() -> Result<()> {
             }
             _ = interval.tick() => {
                 match poll_once(&mut client, &cli.chat, baseline.sent_message_id).await {
-                    Ok(Some(reply)) => {
-                        let body = reply
-                            .text
-                            .unwrap_or_else(|| "(media-only message; no text)".into());
+                    Ok(replies) if !replies.is_empty() => {
                         send_ack(&mut client, &cli.chat).await;
-                        emit_block(&format!("Telegram reply: {body}"));
+                        let reason = if replies.len() == 1 {
+                            replies[0]
+                                .text
+                                .clone()
+                                .unwrap_or_else(|| "(media-only message)".into())
+                        } else {
+                            replies
+                                .iter()
+                                .enumerate()
+                                .map(|(i, r)| {
+                                    let t = r.text.as_deref()
+                                        .unwrap_or("(media-only message)");
+                                    format!("[{}] {t}", i + 1)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        };
+                        emit_block(&reason);
                         return Ok(());
                     }
-                    Ok(None) => {}
+                    Ok(_) => {}
 
                     Err(e) => {
-                        // Transient errors shouldn't kill the wait — log and
-                        // keep polling. A persistent failure surfaces via
-                        // the timeout returning the retry-message.
                         emit_status(&format!("tg-hook: poll failed (will retry): {e:#}"));
                     }
                 }
