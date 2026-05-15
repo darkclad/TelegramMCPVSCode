@@ -33,7 +33,12 @@ pub fn telegrammcp_binary() -> PathBuf {
     let target_dir = std::env::var("CARGO_TARGET_DIR")
         .map_or_else(|_| workspace_root.join("target"), PathBuf::from);
 
-    let profile = std::env::var("CARGO_PROFILE_SELECTED").unwrap_or_else(|_| "debug".to_string());
+    // Cargo does NOT inject the active profile name into integration-test
+    // env at runtime (CARGO_PROFILE_SELECTED is not a real var). Pick the
+    // profile based on whether this test binary itself is a debug build —
+    // when the tests are run via `cargo test --release`, `cfg!(debug_assertions)`
+    // is false and we look in `target/release/`.
+    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
 
     let mut bin = target_dir.join(profile).join("TelegramMCP");
     if cfg!(windows) {
