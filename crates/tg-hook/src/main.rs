@@ -11,7 +11,7 @@ use tg_hook::mcp_client::McpClient;
 use tg_hook::output::{DEFAULT_RETRY_MESSAGE, emit_block, emit_status};
 use tg_hook::poll::poll_once;
 use tg_hook::stop_input::StopInput;
-use tg_hook::wake::{send_ack, send_wakeup};
+use tg_hook::wake::{send_ack, send_response_chunks, send_wakeup};
 
 #[tokio::main]
 async fn main() {
@@ -62,7 +62,15 @@ async fn run() -> Result<()> {
         .await
         .context("sending wakeup")?;
 
-    // 4. Announce intent on stderr so Claude Code shows it to the user.
+    // 4. Send the last assistant response as follow-up chunks.
+    if let Some(ref text) = stop_input.last_assistant_message {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            send_response_chunks(&mut client, &cli.chat, trimmed).await;
+        }
+    }
+
+    // 5. Announce intent on stderr so Claude Code shows it to the user.
     emit_status("Waiting on keyboard interrupt or external message");
 
     // 5. Race poll vs. timeout vs. ctrl-c.

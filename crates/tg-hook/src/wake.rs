@@ -15,6 +15,44 @@ pub struct Baseline {
     pub sent_message_id: i64,
 }
 
+/// Split `text` into chunks of at most `max_len` bytes, breaking at newlines
+/// where possible so messages don't cut mid-sentence.
+fn split_message(text: &str, max_len: usize) -> Vec<String> {
+    if text.len() <= max_len {
+        return vec![text.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut remaining = text;
+    while remaining.len() > max_len {
+        // Step back to a UTF-8 char boundary at or before max_len.
+        let mut boundary = max_len;
+        while !remaining.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        let slice = &remaining[..boundary];
+        // Prefer a newline split so messages break between paragraphs.
+        let cut = slice.rfind('\n').unwrap_or(boundary);
+        let cut = if cut == 0 { boundary } else { cut };
+        chunks.push(remaining[..cut].trim_end().to_string());
+        remaining = remaining[cut..].trim_start();
+    }
+    if !remaining.is_empty() {
+        chunks.push(remaining.to_string());
+    }
+    chunks
+}
+
+/// Send the last assistant response to Telegram, split into ≤4096-byte
+/// chunks. Errors on individual chunks are swallowed — we must not block
+/// the poll loop on a transient send failure.
+pub async fn send_response_chunks(client: &mut McpClient, chat: &str, text: &str) {
+    for chunk in split_message(text, 4096) {
+        let _ = client
+            .call_tool("tg_send_message", json!({ "chat": chat, "text": chunk }))
+            .await;
+    }
+}
+
 /// Send a brief acknowledgement back to the user in Telegram.
 ///
 /// Called right after detecting an inbound reply, before returning the block

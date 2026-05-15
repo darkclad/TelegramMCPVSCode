@@ -19,6 +19,9 @@ pub struct StopInput {
     /// the hook to keep blocking until reply or Ctrl+C), but accept the
     /// field so deserialization doesn't fail.
     pub stop_hook_active: Option<bool>,
+    /// The last assistant message text from this turn. Sent to Telegram after
+    /// the wakeup notification so the user can see what Claude produced.
+    pub last_assistant_message: Option<String>,
 }
 
 impl StopInput {
@@ -39,6 +42,7 @@ impl StopInput {
                 session_id: None,
                 transcript_path: None,
                 stop_hook_active: None,
+                last_assistant_message: None,
             });
         }
         serde_json::from_str(trimmed).map_err(std::io::Error::other)
