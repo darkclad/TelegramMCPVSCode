@@ -2238,7 +2238,6 @@ name = "tg-hook"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "dirs",
  "history",
  "local-pipe",
  "serde",
@@ -2246,8 +2245,6 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
- "tracing",
- "tracing-subscriber",
  "uuid",
  "wiremock",
 ]
