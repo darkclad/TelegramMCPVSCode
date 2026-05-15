@@ -1,9 +1,10 @@
 //! Find the `TelegramMCP` `DiscoveryRecord` belonging to *this* Claude Code
 //! session.
 
-use local_pipe::{DiscoveryRecord, discovery::discovery_dir};
+use local_pipe::{DiscoveryRecord, discovery::discovery_dir, process_alive};
 
-/// Scan the discovery directory and load every parseable record.
+/// Scan the discovery directory and return only records whose server process
+/// is still alive. Stale files (dead processes) are removed as a side effect.
 ///
 /// Files that fail to parse are skipped silently — a half-written record
 /// (e.g. an older server format) should not crash the hook.
@@ -17,11 +18,16 @@ pub fn load_all() -> std::io::Result<Vec<DiscoveryRecord>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let Ok(entry) = entry else { continue };
-        let Ok(bytes) = std::fs::read(entry.path()) else {
+        let path = entry.path();
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(rec) = serde_json::from_slice::<DiscoveryRecord>(&bytes) else {
             continue;
         };
-        if let Ok(rec) = serde_json::from_slice::<DiscoveryRecord>(&bytes) {
+        if process_alive(rec.pid) {
             out.push(rec);
+        } else {
+            // Remove the stale file so it doesn't accumulate across restarts.
+            let _ = std::fs::remove_file(&path);
         }
     }
     Ok(out)
@@ -52,6 +58,10 @@ pub fn pick_record<'a>(
         if let Some(r) = records.iter().find(|r| r.ppid == *pid) {
             return Some(r);
         }
+    }
+    // Last resort: if exactly one live server exists, it must be ours.
+    if records.len() == 1 {
+        return Some(&records[0]);
     }
     None
 }

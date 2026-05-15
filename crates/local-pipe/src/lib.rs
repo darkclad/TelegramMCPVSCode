@@ -14,5 +14,5 @@ pub mod process;
 pub mod server;
 
 pub use discovery::DiscoveryRecord;
-pub use process::pid_ancestry_chain;
+pub use process::{pid_ancestry_chain, process_alive};
 pub use server::{ConnHandler, PipeError, run_pipe_server};

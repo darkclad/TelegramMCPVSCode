@@ -22,6 +22,19 @@ unsafe extern "system" {
     fn Process32FirstW(snapshot: *mut core::ffi::c_void, entry: *mut ProcessEntry32) -> i32;
     fn Process32NextW(snapshot: *mut core::ffi::c_void, entry: *mut ProcessEntry32) -> i32;
     fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, pid: u32) -> *mut core::ffi::c_void;
+}
+
+/// Return `true` if a process with `pid` is currently alive.
+pub fn process_alive(pid: u32) -> bool {
+    // PROCESS_QUERY_LIMITED_INFORMATION — doesn't require admin rights.
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    unsafe { CloseHandle(handle) };
+    true
 }
 
 const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
