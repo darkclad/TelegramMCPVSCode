@@ -38,7 +38,11 @@ pub fn telegrammcp_binary() -> PathBuf {
     // profile based on whether this test binary itself is a debug build —
     // when the tests are run via `cargo test --release`, `cfg!(debug_assertions)`
     // is false and we look in `target/release/`.
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
 
     let mut bin = target_dir.join(profile).join("TelegramMCP");
     if cfg!(windows) {
