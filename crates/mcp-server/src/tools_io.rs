@@ -2,9 +2,7 @@
 //!
 //! Every type derives `serde::Deserialize` (or `Serialize` for outputs) plus
 //! `schemars::JsonSchema` so the input schema can be generated automatically
-//! by the `schema_obj` helper in `main.rs`. Task 18 wires `BotWhoamiInput`
-//! and `ListAliasesInput`; the remaining types land in subsequent tool
-//! tasks.
+//! by the `schema_obj` helper in `main.rs`.
 
 use aliases::ChatRef;
 use schemars::JsonSchema;

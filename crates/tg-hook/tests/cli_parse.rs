@@ -13,7 +13,10 @@ fn parses_minimum_required() {
     ];
     let cli = CliArgs::parse_from(args).expect("parses");
     assert_eq!(cli.chat, "me");
-    assert_eq!(cli.message, "Claude finished. Reply to continue.");
+    assert_eq!(
+        cli.message.as_deref(),
+        Some("Claude finished. Reply to continue.")
+    );
     assert_eq!(cli.timeout_secs, 3600);
     assert_eq!(cli.poll_secs, 5);
     assert_eq!(cli.retry_message.as_deref(), None);
@@ -70,13 +73,16 @@ fn missing_chat_errors() {
 }
 
 #[test]
-fn missing_message_errors() {
+fn missing_message_is_allowed() {
+    // `--message` is optional: the Stop hook falls back to a default and the
+    // PreToolUse hook builds its own message from the question.
     let args = vec![
         "tg-hook".to_string(),
         "--chat".to_string(),
         "me".to_string(),
     ];
-    assert!(CliArgs::parse_from(args).is_err());
+    let cli = CliArgs::parse_from(args).expect("parses without --message");
+    assert_eq!(cli.message, None);
 }
 
 #[test]

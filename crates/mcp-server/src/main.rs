@@ -1,11 +1,10 @@
 //! `TelegramMCP` — MCP server binary, stdio transport.
 //!
-//! Wires the `rmcp` request loop on top of the modules introduced in Task 17.
 //! Startup parses `--config <path>`, loads and validates the TOML config,
 //! constructs the [`TgClient`] / [`History`] / [`Aliases`] runtime state,
-//! optionally spawns the background updater, then drives MCP requests over
-//! stdio. Tool implementations are added incrementally; this task wires
-//! `tg_bot_whoami` and `tg_bot_list_aliases`.
+//! spawns the background updater, retention, and local-pipe tasks, then
+//! drives MCP `tools/call` requests over stdio. Tool I/O types live in
+//! `tools_io.rs`.
 
 mod config;
 mod error;

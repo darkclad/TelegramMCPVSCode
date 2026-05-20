@@ -64,31 +64,7 @@ async fn hook_returns_decision_block_with_inbound_reply() {
 
     // Wait for the discovery file with this session_id to appear (the
     // local-pipe server writes it at startup).
-    let discovery_dir = local_pipe::discovery::discovery_dir().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        assert!(
-            Instant::now() <= deadline,
-            "TelegramMCP did not publish a discovery record in time"
-        );
-        let mut found = false;
-        if let Ok(entries) = std::fs::read_dir(&discovery_dir) {
-            for entry in entries.flatten() {
-                if let Ok(bytes) = std::fs::read(entry.path()) {
-                    if let Ok(rec) = serde_json::from_slice::<local_pipe::DiscoveryRecord>(&bytes) {
-                        if rec.session_id.as_deref() == Some(&session_id) {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        if found {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_for_discovery_record(&session_id).await;
 
     // ---- Seed an inbound reply directly into the SQLite store ----
     // The hook expects an inbound row with message_id > 100 (the
@@ -171,31 +147,7 @@ async fn hook_emits_retry_message_on_timeout() {
     .await
     .unwrap();
 
-    let discovery_dir = local_pipe::discovery::discovery_dir().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        assert!(
-            Instant::now() <= deadline,
-            "TelegramMCP did not publish a discovery record in time"
-        );
-        let mut found = false;
-        if let Ok(entries) = std::fs::read_dir(&discovery_dir) {
-            for entry in entries.flatten() {
-                if let Ok(bytes) = std::fs::read(entry.path()) {
-                    if let Ok(rec) = serde_json::from_slice::<local_pipe::DiscoveryRecord>(&bytes) {
-                        if rec.session_id.as_deref() == Some(&session_id) {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        if found {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_for_discovery_record(&session_id).await;
 
     // No seed_inbound here: the hook should time out and emit the retry-message.
     let hook_out = tokio::task::spawn_blocking({
@@ -242,6 +194,127 @@ async fn hook_emits_retry_message_on_timeout() {
     let parsed: serde_json::Value = serde_json::from_str(last).expect("stdout is JSON");
     assert_eq!(parsed["decision"], "block");
     assert_eq!(parsed["reason"], "RETRY-OK");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hook_blocks_askuserquestion_with_telegram_reply() {
+    let session_id = format!("tg-hook-test-{}", uuid_v4_simple());
+
+    // ---- Bot API stub (the question is sent via SendMessage) ----
+    let bot = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/bot12345:fake/SendMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "result": {
+                "message_id": 100, "date": 1_700_000_000,
+                "chat": { "id": 42, "type": "private" }
+            }
+        })))
+        .mount(&bot)
+        .await;
+
+    let dir = tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    let db_path = dir.path().join("h.db");
+    std::fs::write(
+        &cfg_path,
+        make_config(&bot.uri(), &db_path, 42, &session_id),
+    )
+    .unwrap();
+
+    let _server: ServerGuard = tokio::task::spawn_blocking({
+        let cfg_path = cfg_path.clone();
+        let session_id = session_id.clone();
+        move || spawn_server(&cfg_path, &session_id)
+    })
+    .await
+    .unwrap();
+
+    wait_for_discovery_record(&session_id).await;
+
+    // The user "replies" with option number 2 → label "Bravo".
+    seed_inbound(&db_path, 42, 101, "2").await;
+
+    let stdin_payload = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "session_id": session_id,
+        "tool_input": {
+            "questions": [
+                {
+                    "question": "Pick one",
+                    "header": "Choice",
+                    "options": [
+                        { "label": "Alpha" },
+                        { "label": "Bravo" }
+                    ]
+                }
+            ]
+        }
+    })
+    .to_string();
+
+    let hook_out = tokio::task::spawn_blocking({
+        let session_id = session_id.clone();
+        let payload = format!("{stdin_payload}\n");
+        move || {
+            Command::new(tg_hook_binary())
+                .args(["--chat", "test", "--poll-secs", "1", "--timeout-secs", "10"])
+                .env("CLAUDE_SESSION_ID", &session_id)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn tg-hook")
+                .wait_with_output_after_stdin(&payload)
+                .expect("hook output")
+        }
+    })
+    .await
+    .unwrap();
+
+    // A PreToolUse hook blocks the tool by exiting 2; the answer is on stderr.
+    let stderr = String::from_utf8_lossy(&hook_out.stderr).to_string();
+    assert_eq!(
+        hook_out.status.code(),
+        Some(2),
+        "expected exit 2 (AskUserQuestion blocked)\nstderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Bravo"),
+        "answer not relayed; stderr=\n{stderr}"
+    );
+}
+
+/// Block until a discovery record carrying `session_id` appears in the
+/// discovery directory (the local-pipe server writes it at startup).
+async fn wait_for_discovery_record(session_id: &str) {
+    let discovery_dir = local_pipe::discovery::discovery_dir().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            Instant::now() <= deadline,
+            "TelegramMCP did not publish a discovery record in time"
+        );
+        let mut found = false;
+        if let Ok(entries) = std::fs::read_dir(&discovery_dir) {
+            for entry in entries.flatten() {
+                if let Ok(bytes) = std::fs::read(entry.path()) {
+                    if let Ok(rec) = serde_json::from_slice::<local_pipe::DiscoveryRecord>(&bytes) {
+                        if rec.session_id.as_deref() == Some(session_id) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if found {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Helper: insert an inbound message row by opening the `SQLite` db directly.

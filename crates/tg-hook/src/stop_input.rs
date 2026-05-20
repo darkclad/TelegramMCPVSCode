@@ -25,26 +25,14 @@ pub struct StopInput {
 }
 
 impl StopInput {
-    /// Read the JSON document from stdin. Returns `Ok(StopInput::default())`-
-    /// equivalent (all-None) on empty stdin so the hook can also be smoke-
+    /// Decode from an already-parsed hook stdin document. An empty JSON
+    /// object yields an all-`None` value, so the hook can also be smoke-
     /// tested by hand from a terminal.
     ///
     /// # Errors
     ///
-    /// Returns an error if stdin contains non-empty but malformed JSON.
-    pub fn from_stdin() -> Result<Self, std::io::Error> {
-        use std::io::Read as _;
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        let trimmed = buf.trim();
-        if trimmed.is_empty() {
-            return Ok(Self {
-                session_id: None,
-                transcript_path: None,
-                stop_hook_active: None,
-                last_assistant_message: None,
-            });
-        }
-        serde_json::from_str(trimmed).map_err(std::io::Error::other)
+    /// Returns an error if the value does not match the expected shape.
+    pub fn from_value(v: &serde_json::Value) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(v.clone())
     }
 }

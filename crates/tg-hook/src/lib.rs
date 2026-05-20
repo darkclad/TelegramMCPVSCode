@@ -9,5 +9,6 @@ pub mod local_input;
 pub mod mcp_client;
 pub mod output;
 pub mod poll;
+pub mod question;
 pub mod stop_input;
 pub mod wake;

@@ -32,7 +32,7 @@ impl fmt::Debug for TgClient {
 
 /// Minimal description of a message that was successfully sent to Telegram.
 ///
-/// Returned by the various `send_*` methods added in later tasks.
+/// Returned by the `send_*`, `edit_message_text`, and `forward_message` calls.
 #[derive(Debug, Clone)]
 pub struct SentMessage {
     /// Chat identifier the message was delivered to.
@@ -466,7 +466,7 @@ impl TgClient {
     ) -> Result<u64, TgClientError> {
         use tokio::io::AsyncWriteExt;
 
-        // 1) getFile to learn the path. Leading `/` mirrors the Task 13
+        // 1) getFile to learn the path. Leading `/` mirrors the get_updates_raw
         // construction so `bot12345:...` is not misread as a URI scheme;
         // `GetFile` casing matches teloxide's method-URL convention.
         let get_file_url = self.api_base.join(&format!("/bot{}/GetFile", self.token))?;

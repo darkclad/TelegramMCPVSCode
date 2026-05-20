@@ -9,8 +9,10 @@ use anyhow::{Result, bail};
 pub struct CliArgs {
     /// Alias or numeric chat id to send the wakeup to.
     pub chat: String,
-    /// Wakeup message text sent to Telegram on first invocation.
-    pub message: String,
+    /// Wakeup message for the `Stop` hook. Optional — defaults to a generic
+    /// notice when omitted. The `AskUserQuestion` (`PreToolUse`) hook ignores
+    /// this and builds its message from the question itself.
+    pub message: Option<String>,
     /// Optional text returned to Claude when the 60-minute timeout expires
     /// with no reply. Defaults to a generic retry notice when omitted.
     pub retry_message: Option<String>,
@@ -94,7 +96,7 @@ impl CliArgs {
                 }
                 "--help" | "-h" => {
                     eprintln!(
-                        "tg-hook --chat <alias> --message <text> \
+                        "tg-hook --chat <alias> [--message <text>] \
                          [--retry-message <text>] [--timeout-secs <int>] [--poll-secs <int>] \
                          [--release-on-local-input] [--local-input-threshold-secs <int>]"
                     );
@@ -104,7 +106,6 @@ impl CliArgs {
             }
         }
         let chat = chat.ok_or_else(|| anyhow::anyhow!("--chat is required"))?;
-        let message = message.ok_or_else(|| anyhow::anyhow!("--message is required"))?;
         // Zero would make `tokio::time::interval` panic / the timeout fire
         // instantly — reject it loudly rather than crash the hook later.
         if poll_secs == 0 {

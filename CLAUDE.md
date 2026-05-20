@@ -14,12 +14,18 @@ Binaries:
 - `TelegramMCP` — the MCP server. JSON-RPC over stdio. Also listens on
   a per-instance Windows named pipe (`local-pipe`) so local processes
   like `tg-hook` can call its tools without spawning a second server.
-- `tg-hook` — Claude Code Stop hook (Windows). Sends a wakeup to
-  Telegram, blocks polling history for the user's reply, and returns
-  it to Claude as `{"decision":"block","reason":"..."}`. On 60-minute
-  timeout, returns a configurable retry-message so Claude takes
-  another turn and the hook fires again. Ctrl+C in the Claude Code
-  UI releases the hook and lets the session stop normally.
+- `tg-hook` — Claude Code hook (Windows). Auto-detects its mode from the
+  `hook_event_name` in stdin:
+  - **Stop** — sends a wakeup + the last response to Telegram, blocks
+    polling history for the user's reply, and returns it to Claude as
+    `{"decision":"block","reason":"..."}`. On timeout, returns a
+    configurable retry-message so Claude takes another turn.
+  - **PreToolUse** (matcher `AskUserQuestion`) — relays the question's
+    options to Telegram and blocks the tool (exit code 2) with the user's
+    reply, so multiple-choice prompts can be answered from Telegram.
+
+  Ctrl+C, local keyboard input, or the timeout releases the hook and lets
+  the in-app flow proceed normally.
 
 ### Wiring tg-hook into Claude Code
 
@@ -39,13 +45,31 @@ Add to `~/.claude/settings.json` (or the workspace's `.claude/settings.json`):
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:\\Programs\\user\\TelegramMCP\\tg-hook.exe --chat me --timeout-secs 3600 --poll-secs 5",
+            "timeout": 3700
+          }
+        ]
+      }
     ]
   }
 }
 ```
 
+The `Stop` hook bridges finished turns; the `PreToolUse` hook (matcher
+`AskUserQuestion`) surfaces multiple-choice prompts — reply on Telegram with
+the option number(s). Both entries run the same binary, which picks its mode
+from the `hook_event_name` in stdin. `--message` is omitted from the
+`PreToolUse` entry: that mode builds its message from the question itself.
+
 `timeout` (seconds) must be larger than the hook's `--timeout-secs` or
-Claude Code will kill the hook before it can emit its retry-message.
+Claude Code will kill the hook before it can return.
 
 ## Common commands
 
