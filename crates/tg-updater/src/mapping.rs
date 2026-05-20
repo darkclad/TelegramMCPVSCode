@@ -11,7 +11,7 @@ use serde_json::Value;
     clippy::too_many_lines,
     reason = "single cohesive mapping; splitting it harms readability"
 )]
-pub fn map_update(update: &Value) -> Option<(ChatInfo, StoredMessage)> {
+pub fn map_update(update: Value) -> Option<(ChatInfo, StoredMessage)> {
     let msg = update
         .get("message")
         .or_else(|| update.get("edited_message"))
@@ -74,7 +74,7 @@ pub fn map_update(update: &Value) -> Option<(ChatInfo, StoredMessage)> {
         media_file_id,
         media_meta,
         direction: Direction::In,
-        raw: update.clone(),
+        raw: update,
     };
     Some((chat_info, stored))
 }

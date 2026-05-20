@@ -64,6 +64,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p mcp-server -- --config config.toml    # run the server
 ```
 
+On Windows, run plain `cargo test --workspace` (not `--all-targets`) from a
+non-elevated shell: any test binary whose name contains `update` trips UAC
+installer-detection (error 740). Integration tests all run; only the empty
+`tg-updater` lib harness is skipped (it has `[lib] test = false`).
+
 The toolchain in `rust-toolchain.toml` is stable. Workspace lints in
 `Cargo.toml` enable `clippy::pedantic` everywhere — expect to satisfy
 `uninlined_format_args`, `similar_names`, etc. Allow inline only with a
@@ -86,6 +91,13 @@ crate owns one externally-visible concern:
 - **history** — SQLite store. Owns schema, migrations, FTS5 index, all
   read/write APIs. Owns `HistoryError`.
 - **aliases** — chat-name resolution. `Aliases::resolve(&ChatRef) -> Result<i64, UnknownAlias>`.
+- **local-pipe** — Windows named-pipe IPC. Lets local processes (e.g.
+  `tg-hook`) call a running server's tools without spawning a second one.
+  Owns the per-instance pipe (hardened DACL + `first_pipe_instance`), the
+  `AUTH <token>` handshake, and the discovery file. Owns `PipeError`.
+- **tg-hook** — binary. The Claude Code Stop hook (see *Binaries* above).
+  `anyhow` throughout — it is a binary, and its `lib.rs` exists only so the
+  integration tests can drive its modules.
 
 ### Critical conventions
 

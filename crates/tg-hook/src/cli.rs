@@ -105,6 +105,14 @@ impl CliArgs {
         }
         let chat = chat.ok_or_else(|| anyhow::anyhow!("--chat is required"))?;
         let message = message.ok_or_else(|| anyhow::anyhow!("--message is required"))?;
+        // Zero would make `tokio::time::interval` panic / the timeout fire
+        // instantly — reject it loudly rather than crash the hook later.
+        if poll_secs == 0 {
+            bail!("--poll-secs must be at least 1");
+        }
+        if timeout_secs == 0 {
+            bail!("--timeout-secs must be at least 1");
+        }
         Ok(Self {
             chat,
             message,

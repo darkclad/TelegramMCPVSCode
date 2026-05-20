@@ -130,12 +130,14 @@ fn check_send_allowed(state: &State, chat_id: i64) -> Result<(), McpError> {
 /// Validate and resolve a caller-supplied filesystem path for a file tool
 /// (`download`, `send_photo`, `send_document`).
 ///
-/// A path containing a `..` component is always rejected — a confused or
-/// prompt-injected LLM should not be able to traverse out of an intended
-/// directory. When `file_root` is configured, the path must additionally be
-/// relative, and is resolved against that root; absolute paths are refused.
-/// When `file_root` is `None` the path is returned unchanged (the `..`
-/// rejection still applies).
+/// `..` components are always rejected. The real confinement, though, is
+/// `[access] file_root`: when set, paths must be relative and are resolved
+/// against that root, so a file tool cannot reach anything outside it.
+///
+/// When `file_root` is `None` the file tools are **unconfined** — they trust
+/// the MCP client with any absolute path the server process can reach (the
+/// `..` check alone does not stop an absolute or UNC path). Set `file_root`
+/// if the client is not fully trusted.
 fn resolve_file_path(
     path: &std::path::Path,
     file_root: Option<&std::path::Path>,
@@ -180,27 +182,25 @@ async fn run_retention(store: History, cfg: config::RetentionConfig) {
     let mut tick = tokio::time::interval(INTERVAL);
     loop {
         tick.tick().await;
-        if let Some(days) = cfg.max_age_days {
+        let cutoff = cfg.max_age_days.map(|days| {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()) as i64;
-            let cutoff = now - days as i64 * SECS_PER_DAY;
-            match store.trim_older_than(cutoff).await {
-                Ok(n) if n > 0 => {
-                    tracing::info!(removed = n, cutoff, "retention: pruned old messages");
-                }
-                Ok(_) => {}
-                Err(e) => tracing::error!(error = %e, "retention: trim_older_than failed"),
+            now - days as i64 * SECS_PER_DAY
+        });
+        match store
+            .enforce_retention(cutoff, cfg.max_messages_per_chat)
+            .await
+        {
+            Ok((aged, over)) if aged + over > 0 => {
+                tracing::info!(
+                    aged_out = aged,
+                    overflowed = over,
+                    "retention: pruned messages"
+                );
             }
-        }
-        if let Some(keep) = cfg.max_messages_per_chat {
-            match store.trim_per_chat_to(keep).await {
-                Ok(n) if n > 0 => {
-                    tracing::info!(removed = n, keep, "retention: pruned overflow messages");
-                }
-                Ok(_) => {}
-                Err(e) => tracing::error!(error = %e, "retention: trim_per_chat_to failed"),
-            }
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = %e, "retention: enforce_retention failed"),
         }
     }
 }

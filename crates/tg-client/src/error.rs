@@ -43,21 +43,3 @@ pub enum TgClientError {
     #[error("file download error: {0}")]
     Download(String),
 }
-
-// `code()` is consumed by `mcp-server` error mapping in Task 17+; until then
-// it is dead code in this crate.
-#[allow(dead_code)]
-impl TgClientError {
-    /// Stable machine-readable error code suitable for MCP error responses.
-    #[must_use]
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Http(_) | Self::Download(_) => "http_error",
-            Self::Api { .. } | Self::Teloxide(_) => "telegram_api_error",
-            Self::RateLimited { .. } => "rate_limited",
-            Self::UnknownAlias(_) => "unknown_alias",
-            Self::InvalidChat(_) => "invalid_chat",
-            Self::InvalidUrl(_) => "invalid_url",
-        }
-    }
-}

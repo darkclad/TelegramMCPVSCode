@@ -45,7 +45,7 @@ impl Updater {
     /// 2. Calls `getUpdates` with the configured timeout and allowed kinds.
     /// 3. Maps each update via [`crate::map_update`], drops updates whose
     ///    chat id is not in `allowed_chats` (when set), and persists the
-    ///    rest via [`History::upsert_chat`] + [`History::insert_message`].
+    ///    rest via [`History::record_inbound`] (one transaction per message).
     /// 4. Writes `last_update_id + 1` back to the kv store as the new
     ///    `update_offset` so a restart resumes correctly.
     /// 5. On client errors, sleeps with exponential backoff (1s, doubling,
@@ -96,7 +96,7 @@ impl Updater {
                 Ok(updates) => {
                     backoff = Duration::from_secs(1);
                     let mut max_update_id: Option<i64> = None;
-                    for u in &updates {
+                    for u in updates {
                         let id = u.get("update_id").and_then(serde_json::Value::as_i64);
                         if let Some(i) = id {
                             max_update_id = Some(max_update_id.map_or(i, |m| m.max(i)));
@@ -110,7 +110,7 @@ impl Updater {
                                 continue;
                             }
                         }
-                        if let Err(e) = self.store.record_inbound(&chat, &msg).await {
+                        if let Err(e) = self.store.record_inbound(chat, msg).await {
                             tracing::error!(error = %e, "record_inbound failed");
                         }
                     }

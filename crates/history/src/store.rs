@@ -108,6 +108,42 @@ fn insert_message_sync(conn: &Connection, m: &crate::StoredMessage) -> Result<()
     Ok(())
 }
 
+/// Delete messages older than `cutoff_unix_secs`; returns rows removed.
+/// Shared by [`History::trim_older_than`] and [`History::enforce_retention`].
+fn delete_messages_before(conn: &Connection, cutoff_unix_secs: i64) -> Result<usize, HistoryError> {
+    Ok(conn.execute(
+        "DELETE FROM messages WHERE date < ?1",
+        rusqlite::params![cutoff_unix_secs],
+    )?)
+}
+
+/// Per-chat overflow delete: keep only the `keep_newest` highest-`message_id`
+/// rows in each chat; returns rows removed. Uses `ROW_NUMBER() OVER (...)`
+/// (`SQLite` 3.25+). Shared by [`History::trim_per_chat_to`] and
+/// [`History::enforce_retention`].
+fn delete_per_chat_overflow(conn: &Connection, keep_newest: i64) -> Result<usize, HistoryError> {
+    Ok(conn.execute(
+        "DELETE FROM messages WHERE rowid IN ( \
+            SELECT rowid FROM ( \
+                SELECT rowid, ROW_NUMBER() OVER ( \
+                    PARTITION BY chat_id ORDER BY message_id DESC \
+                ) AS rn FROM messages \
+            ) WHERE rn > ?1 \
+         )",
+        rusqlite::params![keep_newest],
+    )?)
+}
+
+/// Rebuild the external-content FTS5 index from the `messages` table — the
+/// canonical way to resync it after a bulk DELETE.
+fn rebuild_fts(conn: &Connection) -> Result<(), HistoryError> {
+    conn.execute(
+        "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
+        [],
+    )?;
+    Ok(())
+}
+
 impl History {
     /// Open (creating if needed) the history database at `path`, running any
     /// pending schema migrations.
@@ -206,12 +242,19 @@ impl History {
     /// Insert a message row, overwriting any existing row with the same
     /// `(chat_id, message_id)` primary key, and synchronize the
     /// external-content FTS5 index.
+    ///
+    /// The message write and the two FTS5 sync statements run in one
+    /// transaction so a crash can't leave the index out of step with
+    /// `messages`.
     pub async fn insert_message(&self, m: &crate::StoredMessage) -> Result<(), HistoryError> {
         let conn = self.inner.clone();
         let m = m.clone();
-        tokio::task::spawn_blocking(move || {
-            let guard = conn.blocking_lock();
-            insert_message_sync(&guard, &m)
+        tokio::task::spawn_blocking(move || -> Result<(), HistoryError> {
+            let mut guard = conn.blocking_lock();
+            let tx = guard.transaction()?;
+            insert_message_sync(&tx, &m)?;
+            tx.commit()?;
+            Ok(())
         })
         .await?
     }
@@ -222,14 +265,15 @@ impl History {
     /// `spawn_blocking` round-trip and one `SQLite` commit — the updater
     /// calls this once per incoming message, so batching the two writes
     /// avoids a task hop and a separate WAL commit per message.
+    ///
+    /// Takes `chat`/`msg` by value: the updater owns them already, so this
+    /// moves the (potentially large) raw-update JSON in rather than cloning.
     pub async fn record_inbound(
         &self,
-        chat: &crate::ChatInfo,
-        msg: &crate::StoredMessage,
+        chat: crate::ChatInfo,
+        msg: crate::StoredMessage,
     ) -> Result<(), HistoryError> {
         let conn = self.inner.clone();
-        let chat = chat.clone();
-        let msg = msg.clone();
         tokio::task::spawn_blocking(move || -> Result<(), HistoryError> {
             let mut guard = conn.blocking_lock();
             let tx = guard.transaction()?;
@@ -623,14 +667,8 @@ impl History {
         let conn = self.inner.clone();
         tokio::task::spawn_blocking(move || -> Result<usize, HistoryError> {
             let guard = conn.blocking_lock();
-            let removed = guard.execute(
-                "DELETE FROM messages WHERE date < ?1",
-                rusqlite::params![cutoff_unix_secs],
-            )?;
-            guard.execute(
-                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
-                [],
-            )?;
+            let removed = delete_messages_before(&guard, cutoff_unix_secs)?;
+            rebuild_fts(&guard)?;
             Ok(removed)
         })
         .await?
@@ -639,28 +677,49 @@ impl History {
     /// Per-chat retention: keep only the `keep_newest` highest-`message_id`
     /// rows in each chat, deleting older ones, then rebuild the FTS5 index.
     /// Returns the total number of rows deleted across all chats.
-    ///
-    /// Uses SQL window functions (`ROW_NUMBER() OVER (PARTITION BY ...)`),
-    /// which require `SQLite` 3.25+ — provided by the bundled rusqlite.
     pub async fn trim_per_chat_to(&self, keep_newest: i64) -> Result<usize, HistoryError> {
         let conn = self.inner.clone();
         tokio::task::spawn_blocking(move || -> Result<usize, HistoryError> {
             let guard = conn.blocking_lock();
-            let removed = guard.execute(
-                "DELETE FROM messages WHERE rowid IN ( \
-                    SELECT rowid FROM ( \
-                        SELECT rowid, ROW_NUMBER() OVER ( \
-                            PARTITION BY chat_id ORDER BY message_id DESC \
-                        ) AS rn FROM messages \
-                    ) WHERE rn > ?1 \
-                 )",
-                rusqlite::params![keep_newest],
-            )?;
-            guard.execute(
-                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
-                [],
-            )?;
+            let removed = delete_per_chat_overflow(&guard, keep_newest)?;
+            rebuild_fts(&guard)?;
             Ok(removed)
+        })
+        .await?
+    }
+
+    /// Apply both retention limits in a single transaction with at most one
+    /// FTS5 rebuild.
+    ///
+    /// `max_age_cutoff` (when `Some`) deletes messages older than that unix
+    /// timestamp; `keep_per_chat` (when `Some`) caps each chat to its newest
+    /// N messages. The expensive `'rebuild'` runs only if something was
+    /// actually deleted. Returns `(aged_out, overflowed)` row counts.
+    ///
+    /// This is what the periodic retention task calls — folding both trims
+    /// into one transaction + one rebuild instead of two of each.
+    pub async fn enforce_retention(
+        &self,
+        max_age_cutoff: Option<i64>,
+        keep_per_chat: Option<i64>,
+    ) -> Result<(usize, usize), HistoryError> {
+        let conn = self.inner.clone();
+        tokio::task::spawn_blocking(move || -> Result<(usize, usize), HistoryError> {
+            let mut guard = conn.blocking_lock();
+            let tx = guard.transaction()?;
+            let aged_out = match max_age_cutoff {
+                Some(cutoff) => delete_messages_before(&tx, cutoff)?,
+                None => 0,
+            };
+            let overflowed = match keep_per_chat {
+                Some(keep) => delete_per_chat_overflow(&tx, keep)?,
+                None => 0,
+            };
+            if aged_out + overflowed > 0 {
+                rebuild_fts(&tx)?;
+            }
+            tx.commit()?;
+            Ok((aged_out, overflowed))
         })
         .await?
     }

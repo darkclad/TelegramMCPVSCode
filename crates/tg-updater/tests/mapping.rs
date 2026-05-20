@@ -15,7 +15,7 @@ fn maps_private_text_message() {
             "text": "hello"
         }
     });
-    let (chat, msg) = map_update(&u).unwrap();
+    let (chat, msg) = map_update(u).unwrap();
     assert_eq!(chat.chat_id, 42);
     assert_eq!(msg.text.as_deref(), Some("hello"));
     assert_eq!(msg.message_id, 7);
@@ -34,7 +34,7 @@ fn maps_photo_uses_largest() {
             ]
         }
     });
-    let (_, msg) = map_update(&u).unwrap();
+    let (_, msg) = map_update(u).unwrap();
     assert_eq!(msg.media_kind.as_deref(), Some("photo"));
     assert_eq!(msg.media_file_id.as_deref(), Some("big"));
 }
@@ -45,5 +45,5 @@ fn ignores_callback_query() {
         "update_id": 3,
         "callback_query": { "id": "cb", "from": { "id": 1, "is_bot": false, "first_name": "x" } }
     });
-    assert!(map_update(&u).is_none());
+    assert!(map_update(u).is_none());
 }

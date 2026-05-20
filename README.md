@@ -73,7 +73,9 @@ Workspace crates:
 - `history` — SQLite store (schema, migrations, FTS5)
 - `tg-client` — outbound Bot API wrapper
 - `tg-updater` — background `getUpdates` long-poller
+- `local-pipe` — Windows named-pipe IPC (lets local hooks call the server)
 - `mcp-server` — `rmcp`-backed binary that wires it all together
+- `tg-hook` — Claude Code Stop hook binary (Windows)
 
 ## Security model
 
@@ -83,6 +85,12 @@ Workspace crates:
 - **No MTProto / user-account API.** Only the Bot API (HTTPS).
 - **Allowlists.** Optional `[access] allowed_chats` (inbound drop filter) and
   `allowed_send_targets` (outbound deny) keep blast radius small.
+- **File tools.** Optional `[access] file_root` confines `tg_history_download`
+  / `tg_send_photo` / `tg_send_document` to one directory; unset leaves them
+  unconfined (the MCP client is trusted).
+- **Local pipe.** The server also serves its tools over a per-instance Windows
+  named pipe for local hooks like `tg-hook` — DACL-restricted to the current
+  user, claimed with `first_pipe_instance`, and gated by a per-instance token.
 
 ## License
 

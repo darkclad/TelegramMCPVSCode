@@ -489,6 +489,17 @@ impl TgClient {
         let file_path = resp["result"]["file_path"]
             .as_str()
             .ok_or_else(|| TgClientError::Download("missing file_path".into()))?;
+        // `file_path` comes from the Bot API (and with a custom `api_base_url`,
+        // from a server we may not fully trust). Reject anything that isn't a
+        // plain relative path, so it cannot traverse the download URL.
+        if file_path.starts_with('/')
+            || file_path.starts_with('\\')
+            || file_path.split(['/', '\\']).any(|seg| seg == "..")
+        {
+            return Err(TgClientError::Download(format!(
+                "getFile returned an unsafe file_path: {file_path}"
+            )));
+        }
 
         // 2) GET the file bytes. Stream chunks straight to disk so large
         // attachments don't fully buffer in memory.
