@@ -7,6 +7,18 @@ authors.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+# Windows' UAC installer-detection heuristic refuses to launch any executable
+# whose name contains "update" (error 740), which would be the case for this
+# crate's unit-test harness `tg_updater-<hash>.exe`. The crate has no unit
+# tests — all of its tests are integration tests under `tests/` (`mapping.rs`,
+# `polling.rs`, with installer-safe binary names) — so disabling the empty
+# unit-test harness keeps plain `cargo test` runnable on Windows. NOTE:
+# `cargo test --all-targets` re-enables it explicitly; the complete fix is to
+# rename the crate to something without "update". Add new tests under
+# `tests/`, not as `#[cfg(test)]` modules in `src/`.
+test = false
+
 [lints]
 workspace = true
 

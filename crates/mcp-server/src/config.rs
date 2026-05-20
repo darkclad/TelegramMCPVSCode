@@ -21,10 +21,6 @@ pub struct Config {
     pub updater: UpdaterConfig,
     /// Retention policy for stored history.
     #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "consumed by retention enforcement in a later task"
-    )]
     pub retention: RetentionConfig,
     /// Map of alias names to numeric chat ids.
     #[serde(default)]
@@ -92,16 +88,14 @@ fn default_allowed_kinds() -> Vec<String> {
 }
 
 /// `[retention]` section: optional history-pruning policy.
-#[derive(Debug, Default, Deserialize)]
-#[allow(
-    dead_code,
-    reason = "consumed by retention enforcement in a later task"
-)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub struct RetentionConfig {
-    /// Drop messages older than this many days. `None` disables age-based pruning.
+    /// Drop messages older than this many days. `None` disables age-based
+    /// pruning.
     pub max_age_days: Option<u64>,
-    /// Hard cap on stored messages. `None` disables count-based pruning.
-    pub max_messages_total: Option<i64>,
+    /// Per-chat cap: keep only the newest N messages in each chat. `None`
+    /// disables count-based pruning.
+    pub max_messages_per_chat: Option<i64>,
 }
 
 /// `[access]` section: chat allow-lists for read and send tools.
@@ -113,6 +107,12 @@ pub struct AccessConfig {
     /// Chats the server may send to. Empty = unrestricted.
     #[serde(default)]
     pub allowed_send_targets: Vec<AliasOrId>,
+    /// Directory the file tools (`download`, `send_photo`, `send_document`)
+    /// are confined to. When set, those tools accept only relative paths,
+    /// resolved against this root. `None` leaves them unrestricted (paths
+    /// containing `..` are always rejected regardless).
+    #[serde(default)]
+    pub file_root: Option<PathBuf>,
 }
 
 /// A chat reference inside `[access]`: either a numeric id or an alias name.

@@ -1,16 +1,20 @@
-//! Send the wakeup message and parse `(chat_id, message_id)` from the
+//! Send the wakeup message and parse `message_id` from the
 //! `tg_send_message` response — used as the baseline for reply detection.
 
-use crate::mcp_client::McpClient;
+use crate::mcp_client::{McpClient, tool_result_text};
+use crate::output::DEFAULT_ACK_MESSAGE;
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
+/// Telegram Bot API hard limit on a message body (4096 characters). We split
+/// on byte length, which is conservative for multi-byte text — chunks stay
+/// at or under the character limit.
+const TELEGRAM_MAX_MESSAGE_BYTES: usize = 4096;
+
 /// Baseline state captured from the wakeup send. Reply detection looks for
-/// any *inbound* message in `chat_id` with `message_id > sent_message_id`.
+/// any *inbound* message with `message_id > sent_message_id`.
 #[derive(Debug, Clone, Copy)]
 pub struct Baseline {
-    /// Numeric chat identifier returned by the Bot API.
-    pub chat_id: i64,
     /// `message_id` of the message we sent; reply detection starts above this.
     pub sent_message_id: i64,
 }
@@ -42,11 +46,11 @@ fn split_message(text: &str, max_len: usize) -> Vec<String> {
     chunks
 }
 
-/// Send the last assistant response to Telegram, split into ≤4096-byte
-/// chunks. Errors on individual chunks are swallowed — we must not block
-/// the poll loop on a transient send failure.
+/// Send the last assistant response to Telegram, split into chunks within
+/// the Bot API message-size limit. Errors on individual chunks are swallowed
+/// — we must not block the poll loop on a transient send failure.
 pub async fn send_response_chunks(client: &mut McpClient, chat: &str, text: &str) {
-    for chunk in split_message(text, 4096) {
+    for chunk in split_message(text, TELEGRAM_MAX_MESSAGE_BYTES) {
         let _ = client
             .call_tool("tg_send_message", json!({ "chat": chat, "text": chunk }))
             .await;
@@ -63,7 +67,7 @@ pub async fn send_ack(client: &mut McpClient, chat: &str) {
     let _ = client
         .call_tool(
             "tg_send_message",
-            json!({ "chat": chat, "text": "Got it, working on it..." }),
+            json!({ "chat": chat, "text": DEFAULT_ACK_MESSAGE }),
         )
         .await;
 }
@@ -80,25 +84,13 @@ pub async fn send_wakeup(client: &mut McpClient, chat: &str, text: &str) -> Resu
 /// Decode the nested JSON: `result.content[0].text` is a JSON string that
 /// parses into `{ chat_id, message_id, date }`.
 pub fn extract_baseline(result: &Value) -> Result<Baseline> {
-    let text = result
-        .get("content")
-        .and_then(|c| c.get(0))
-        .and_then(|c0| c0.get("text"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("tg_send_message: missing content[0].text"))?;
+    let text = tool_result_text(result).context("tg_send_message result")?;
     let parsed: Value = serde_json::from_str(text).context("decoding tg_send_message text")?;
-    let chat_id = parsed
-        .get("chat_id")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| anyhow!("tg_send_message: missing chat_id"))?;
     let sent_message_id = parsed
         .get("message_id")
         .and_then(Value::as_i64)
         .ok_or_else(|| anyhow!("tg_send_message: missing message_id"))?;
-    Ok(Baseline {
-        chat_id,
-        sent_message_id,
-    })
+    Ok(Baseline { sent_message_id })
 }
 
 #[cfg(test)]
@@ -115,7 +107,6 @@ mod tests {
             "isError": false
         });
         let b = extract_baseline(&result).expect("ok");
-        assert_eq!(b.chat_id, 42);
         assert_eq!(b.sent_message_id, 7);
     }
 
@@ -123,5 +114,46 @@ mod tests {
     fn missing_content_errors() {
         let result = json!({});
         assert!(extract_baseline(&result).is_err());
+    }
+
+    #[test]
+    fn split_message_short_text_is_one_chunk() {
+        assert_eq!(split_message("hello", 4096), vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn split_message_hard_splits_text_without_newlines() {
+        let text = "x".repeat(100);
+        let chunks = split_message(&text, 30);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.len() <= 30));
+        // No whitespace to trim, so the chunks rejoin to the original.
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn split_message_prefers_newline_breaks() {
+        let text = format!("{}\n{}", "a".repeat(10), "b".repeat(40));
+        let chunks = split_message(&text, 20);
+        // First chunk ends at the newline rather than mid-run.
+        assert_eq!(chunks[0], "a".repeat(10));
+    }
+
+    #[test]
+    fn split_message_respects_utf8_boundaries() {
+        // 'é' is 2 bytes; 20 of them = 40 bytes, split at 15.
+        let text = "é".repeat(20);
+        let chunks = split_message(&text, 15);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.len() <= 15));
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn split_message_handles_leading_newline() {
+        // Newline at offset 0 must not produce a zero-length cut.
+        let text = format!("\n{}", "z".repeat(100));
+        let chunks = split_message(&text, 30);
+        assert!(chunks.iter().all(|c| c.len() <= 30));
     }
 }

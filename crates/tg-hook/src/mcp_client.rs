@@ -1,11 +1,19 @@
 //! Tiny MCP JSON-RPC client over a Windows named pipe. Owns the connect
 //! + AUTH handshake and one `initialize` + N `tools/call` requests.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
+use std::os::windows::io::AsRawHandle as _;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+
+/// Win32 `ERROR_PIPE_BUSY` — all server pipe instances are momentarily in use.
+const ERROR_PIPE_BUSY: i32 = 231;
+/// How many times to retry a busy pipe before giving up.
+const PIPE_OPEN_RETRIES: u32 = 10;
+/// Delay between busy-pipe retries.
+const PIPE_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Connected, authenticated, MCP-initialized client.
 pub struct McpClient {
@@ -15,14 +23,28 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Connect to `pipe_path`, send `AUTH <token>\n`, then drive the MCP
-    /// `initialize` handshake.
+    /// Connect to `pipe_path`, verify the server's identity, send
+    /// `AUTH <token>\n`, then drive the MCP `initialize` handshake.
+    ///
+    /// `expected_server_pid` is the `pid` from the discovery record; the
+    /// pipe's actual server process id is checked against it so a stale or
+    /// tampered record routing us to a different process is rejected.
     ///
     /// `ClientOptions::open` will fail with `ERROR_PIPE_BUSY` if all server
     /// instances are currently in use; we retry briefly before giving up so
     /// a momentary race during server accept-loop doesn't fail the hook.
-    pub async fn connect(pipe_path: &str, token: &str) -> Result<Self> {
+    pub async fn connect(pipe_path: &str, token: &str, expected_server_pid: u32) -> Result<Self> {
         let client = open_with_retry(pipe_path).await?;
+        // Confirm the pipe is served by the process named in the discovery
+        // record before sending anything over it.
+        let server_pid = local_pipe::process::named_pipe_server_pid(client.as_raw_handle())
+            .context("querying named-pipe server pid")?;
+        if server_pid != expected_server_pid {
+            bail!(
+                "pipe server pid {server_pid} does not match discovery record pid \
+                 {expected_server_pid} — record may be stale or tampered"
+            );
+        }
         let (r, mut w) = tokio::io::split(client);
         w.write_all(format!("AUTH {token}\n").as_bytes())
             .await
@@ -113,15 +135,28 @@ impl McpClient {
 
 async fn open_with_retry(pipe_path: &str) -> Result<NamedPipeClient> {
     // Retry the "all pipe instances busy" race; bail on anything else.
-    // ERROR_PIPE_BUSY = 231.
-    for _ in 0..10 {
+    for _ in 0..PIPE_OPEN_RETRIES {
         match ClientOptions::new().open(pipe_path) {
             Ok(c) => return Ok(c),
-            Err(e) if e.raw_os_error() == Some(231) => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                tokio::time::sleep(PIPE_RETRY_DELAY).await;
             }
             Err(e) => return Err(e).context(format!("opening pipe {pipe_path}")),
         }
     }
-    Err(anyhow!("pipe {pipe_path} stayed busy after 10 retries"))
+    Err(anyhow!(
+        "pipe {pipe_path} stayed busy after {PIPE_OPEN_RETRIES} retries"
+    ))
+}
+
+/// Extract `result.content[0].text` from an MCP `tools/call` result — the
+/// standard text-content envelope. Both `poll` and `wake` decode tool
+/// payloads nested inside this shape.
+pub fn tool_result_text(result: &Value) -> Result<&str> {
+    result
+        .get("content")
+        .and_then(|c| c.get(0))
+        .and_then(|c0| c0.get("text"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("MCP result missing content[0].text"))
 }

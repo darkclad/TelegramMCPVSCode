@@ -22,6 +22,92 @@ pub struct History {
     inner: Arc<Mutex<Connection>>,
 }
 
+/// Insert-or-update a chat row on `conn`. Shared by [`History::upsert_chat`]
+/// and [`History::record_inbound`]; `conn` may be a plain connection or a
+/// transaction.
+fn upsert_chat_sync(conn: &Connection, c: &crate::ChatInfo) -> Result<(), HistoryError> {
+    conn.execute(
+        "INSERT INTO chats(chat_id, kind, title, username, first_seen, last_seen) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(chat_id) DO UPDATE SET \
+            kind=excluded.kind, title=excluded.title, username=excluded.username, \
+            last_seen=excluded.last_seen",
+        rusqlite::params![
+            c.chat_id,
+            c.kind.as_sql(),
+            c.title,
+            c.username,
+            c.first_seen,
+            c.last_seen
+        ],
+    )?;
+    Ok(())
+}
+
+/// Insert-or-replace a message row on `conn` and keep the external-content
+/// FTS5 index in sync. Shared by [`History::insert_message`] and
+/// [`History::record_inbound`].
+fn insert_message_sync(conn: &Connection, m: &crate::StoredMessage) -> Result<(), HistoryError> {
+    let media_meta_s = m
+        .media_meta
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let raw_s = serde_json::to_string(&m.raw)?;
+
+    // External-content FTS5 requires explicit synchronization. Look up any
+    // existing row first so we can issue the FTS5 'delete' command with the
+    // OLD text before overwriting the content table.
+    let existing: Option<(i64, Option<String>)> = conn
+        .query_row(
+            "SELECT rowid, text FROM messages WHERE chat_id=?1 AND message_id=?2",
+            rusqlite::params![m.chat_id, m.message_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((old_rowid, old_text)) = existing {
+        // FTS5 'delete' command syntax for external-content tables.
+        conn.execute(
+            "INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', ?1, ?2)",
+            rusqlite::params![old_rowid, old_text],
+        )?;
+    }
+
+    conn.execute(
+        "INSERT INTO messages(\
+            chat_id, message_id, date, from_id, from_name, reply_to, \
+            text, media_kind, media_file_id, media_meta, direction, raw) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+         ON CONFLICT(chat_id, message_id) DO UPDATE SET \
+            date=excluded.date, from_id=excluded.from_id, from_name=excluded.from_name, \
+            reply_to=excluded.reply_to, text=excluded.text, \
+            media_kind=excluded.media_kind, media_file_id=excluded.media_file_id, \
+            media_meta=excluded.media_meta, direction=excluded.direction, \
+            raw=excluded.raw",
+        rusqlite::params![
+            m.chat_id,
+            m.message_id,
+            m.date,
+            m.from_id,
+            m.from_name,
+            m.reply_to,
+            m.text,
+            m.media_kind,
+            m.media_file_id,
+            media_meta_s,
+            m.direction.as_sql(),
+            raw_s,
+        ],
+    )?;
+    // Index the (possibly new) row into FTS.
+    conn.execute(
+        "INSERT INTO messages_fts(rowid, text) \
+         SELECT rowid, text FROM messages WHERE chat_id=?1 AND message_id=?2",
+        rusqlite::params![m.chat_id, m.message_id],
+    )?;
+    Ok(())
+}
+
 impl History {
     /// Open (creating if needed) the history database at `path`, running any
     /// pending schema migrations.
@@ -44,35 +130,15 @@ impl History {
             .map_err(|_| HistoryError::Corruption("schema_version not a number".into()))
     }
 
-    #[allow(dead_code)] // wired up in Task 6+
-    pub(crate) fn conn(&self) -> Arc<Mutex<Connection>> {
-        self.inner.clone()
-    }
-
     /// Insert a chat row, or update the mutable fields (`kind`, `title`,
     /// `username`, `last_seen`) if a row with the same `chat_id` already
     /// exists. `first_seen` is preserved across updates.
     pub async fn upsert_chat(&self, c: &crate::ChatInfo) -> Result<(), HistoryError> {
         let conn = self.inner.clone();
         let c = c.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), HistoryError> {
+        tokio::task::spawn_blocking(move || {
             let guard = conn.blocking_lock();
-            guard.execute(
-                "INSERT INTO chats(chat_id, kind, title, username, first_seen, last_seen) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                 ON CONFLICT(chat_id) DO UPDATE SET \
-                    kind=excluded.kind, title=excluded.title, username=excluded.username, \
-                    last_seen=excluded.last_seen",
-                rusqlite::params![
-                    c.chat_id,
-                    c.kind.as_sql(),
-                    c.title,
-                    c.username,
-                    c.first_seen,
-                    c.last_seen
-                ],
-            )?;
-            Ok(())
+            upsert_chat_sync(&guard, &c)
         })
         .await?
     }
@@ -143,67 +209,33 @@ impl History {
     pub async fn insert_message(&self, m: &crate::StoredMessage) -> Result<(), HistoryError> {
         let conn = self.inner.clone();
         let m = m.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), HistoryError> {
+        tokio::task::spawn_blocking(move || {
             let guard = conn.blocking_lock();
-            let media_meta_s = m
-                .media_meta
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?;
-            let raw_s = serde_json::to_string(&m.raw)?;
+            insert_message_sync(&guard, &m)
+        })
+        .await?
+    }
 
-            // External-content FTS5 requires explicit synchronization. Look
-            // up any existing row first so we can issue the FTS5 'delete'
-            // command with the OLD text before overwriting the content table.
-            let existing: Option<(i64, Option<String>)> = guard
-                .query_row(
-                    "SELECT rowid, text FROM messages \
-                     WHERE chat_id=?1 AND message_id=?2",
-                    rusqlite::params![m.chat_id, m.message_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            if let Some((old_rowid, old_text)) = existing {
-                // FTS5 'delete' command syntax for external-content tables.
-                guard.execute(
-                    "INSERT INTO messages_fts(messages_fts, rowid, text) \
-                     VALUES('delete', ?1, ?2)",
-                    rusqlite::params![old_rowid, old_text],
-                )?;
-            }
-
-            guard.execute(
-                "INSERT INTO messages(\
-                    chat_id, message_id, date, from_id, from_name, reply_to, \
-                    text, media_kind, media_file_id, media_meta, direction, raw) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
-                 ON CONFLICT(chat_id, message_id) DO UPDATE SET \
-                    date=excluded.date, from_id=excluded.from_id, from_name=excluded.from_name, \
-                    reply_to=excluded.reply_to, text=excluded.text, \
-                    media_kind=excluded.media_kind, media_file_id=excluded.media_file_id, \
-                    media_meta=excluded.media_meta, direction=excluded.direction, \
-                    raw=excluded.raw",
-                rusqlite::params![
-                    m.chat_id,
-                    m.message_id,
-                    m.date,
-                    m.from_id,
-                    m.from_name,
-                    m.reply_to,
-                    m.text,
-                    m.media_kind,
-                    m.media_file_id,
-                    media_meta_s,
-                    m.direction.as_sql(),
-                    raw_s,
-                ],
-            )?;
-            // Index the (possibly new) row into FTS.
-            guard.execute(
-                "INSERT INTO messages_fts(rowid, text) \
-                 SELECT rowid, text FROM messages WHERE chat_id=?1 AND message_id=?2",
-                rusqlite::params![m.chat_id, m.message_id],
-            )?;
+    /// Persist an inbound `(chat, message)` pair in a single transaction.
+    ///
+    /// Folds [`Self::upsert_chat`] and [`Self::insert_message`] into one
+    /// `spawn_blocking` round-trip and one `SQLite` commit — the updater
+    /// calls this once per incoming message, so batching the two writes
+    /// avoids a task hop and a separate WAL commit per message.
+    pub async fn record_inbound(
+        &self,
+        chat: &crate::ChatInfo,
+        msg: &crate::StoredMessage,
+    ) -> Result<(), HistoryError> {
+        let conn = self.inner.clone();
+        let chat = chat.clone();
+        let msg = msg.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), HistoryError> {
+            let mut guard = conn.blocking_lock();
+            let tx = guard.transaction()?;
+            upsert_chat_sync(&tx, &chat)?;
+            insert_message_sync(&tx, &msg)?;
+            tx.commit()?;
             Ok(())
         })
         .await?
@@ -401,14 +433,16 @@ impl History {
         let conn = self.inner.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<crate::ChatSummary>, HistoryError> {
             let guard = conn.blocking_lock();
-            let mut stmt = guard.prepare(
-                "SELECT c.chat_id, c.kind, c.title, c.username, c.first_seen, c.last_seen, \
-                        (SELECT MAX(message_id) FROM messages m WHERE m.chat_id=c.chat_id) AS last_msg \
-                 FROM chats c \
-                 ORDER BY c.last_seen DESC",
-            )?;
-            let mut chats: Vec<(crate::ChatInfo, Option<i64>)> = stmt
-                .query_map([], |r| {
+            // 1) Every chat in one query.
+            let chats: Vec<(crate::ChatInfo, Option<i64>)> = {
+                let mut stmt = guard.prepare(
+                    "SELECT c.chat_id, c.kind, c.title, c.username, c.first_seen, c.last_seen, \
+                            (SELECT MAX(message_id) FROM messages m WHERE m.chat_id=c.chat_id) \
+                                AS last_msg \
+                     FROM chats c \
+                     ORDER BY c.last_seen DESC",
+                )?;
+                stmt.query_map([], |r| {
                     let kind_s: String = r.get(1)?;
                     Ok((
                         crate::ChatInfo {
@@ -423,24 +457,43 @@ impl History {
                         r.get::<_, Option<i64>>(6)?,
                     ))
                 })?
-                .collect::<Result<_, _>>()?;
+                .collect::<Result<_, _>>()?
+            };
 
+            // 2) Every unread baseline in one query — avoids a `kv` lookup
+            //    per chat.
+            let mut baselines: std::collections::HashMap<i64, i64> =
+                std::collections::HashMap::new();
+            {
+                let mut bstmt = guard
+                    .prepare("SELECT key, value FROM kv WHERE key LIKE 'last_unread_baseline:%'")?;
+                let rows = bstmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+                for row in rows {
+                    let (key, value) = row?;
+                    if let Some(id_str) = key.strip_prefix("last_unread_baseline:") {
+                        if let (Ok(cid), Ok(base)) = (id_str.parse::<i64>(), value.parse::<i64>()) {
+                            baselines.insert(cid, base);
+                        }
+                    }
+                }
+            }
+
+            // 3) Per-chat unread count, reusing one prepared statement.
+            let mut count_stmt = guard.prepare(
+                "SELECT COUNT(*) FROM messages \
+                 WHERE chat_id=?1 AND direction='in' AND message_id > ?2",
+            )?;
             let mut out = Vec::with_capacity(chats.len());
-            for (info, last_message_id) in chats.drain(..) {
-                let unread_baseline: Option<i64> = guard
-                    .query_row(
-                        "SELECT value FROM kv WHERE key = ?1",
-                        rusqlite::params![format!("last_unread_baseline:{}", info.chat_id)],
-                        |r| r.get::<_, String>(0).map(|s| s.parse().unwrap_or(0)),
-                    )
-                    .ok();
-                let unread_count: i64 = guard.query_row(
-                    "SELECT COUNT(*) FROM messages \
-                     WHERE chat_id=?1 AND direction='in' AND message_id > ?2",
-                    rusqlite::params![info.chat_id, unread_baseline.unwrap_or(0)],
-                    |r| r.get(0),
-                )?;
-                out.push(crate::ChatSummary { info, unread_count, last_message_id });
+            for (info, last_message_id) in chats {
+                let baseline = baselines.get(&info.chat_id).copied().unwrap_or(0);
+                let unread_count: i64 = count_stmt
+                    .query_row(rusqlite::params![info.chat_id, baseline], |r| r.get(0))?;
+                out.push(crate::ChatSummary {
+                    info,
+                    unread_count,
+                    last_message_id,
+                });
             }
             Ok(out)
         })

@@ -23,3 +23,7 @@ pub fn emit_block(reason: &str) {
 /// Default retry-message used when `--retry-message` is omitted.
 pub const DEFAULT_RETRY_MESSAGE: &str =
     "No Telegram reply within the wait window. Decide whether to wait again or wrap up.";
+
+/// Acknowledgement sent to Telegram the moment an inbound reply is detected,
+/// so the user sees that Claude received their message.
+pub const DEFAULT_ACK_MESSAGE: &str = "Got it, working on it...";

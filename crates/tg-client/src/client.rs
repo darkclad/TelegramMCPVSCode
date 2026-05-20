@@ -13,8 +13,12 @@ use url::Url;
 pub struct TgClient {
     bot: teloxide::Bot,
     api_base: Url,
-    // Held for use by `getUpdates`/`downloadFile` paths wired up in Task 13+.
+    // Used to build the `/bot<token>/...` URLs for the `getUpdates` and
+    // `downloadFile` paths, which bypass teloxide's typed request layer.
     token: String,
+    // One shared HTTP client: `reqwest::Client` owns a connection pool, so
+    // reusing it keeps TCP/TLS connections alive across long-poll cycles.
+    http: reqwest::Client,
 }
 
 impl fmt::Debug for TgClient {
@@ -68,10 +72,17 @@ impl TgClient {
                 .expect("static URL parses"),
         };
         let bot = teloxide::Bot::new(token.clone()).set_api_url(url.clone());
+        // Build one HTTP client up front and reuse it for every raw
+        // `getUpdates` / `downloadFile` call. The per-call read timeout that
+        // varies for long-poll is applied per-request, not on the client.
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(redact_reqwest_err)?;
         Ok(Self {
             bot,
             api_base: url,
             token,
+            http,
         })
     }
 
@@ -389,12 +400,12 @@ impl TgClient {
         if let Some(kinds) = allowed_updates {
             body.insert("allowed_updates".into(), serde_json::json!(kinds));
         }
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs + 10))
-            .build()
-            .map_err(redact_reqwest_err)?;
-        let resp: serde_json::Value = client
+        // Per-request read timeout: `timeout_secs + 10` so the long-poll
+        // deadline always trips before the transport timeout.
+        let resp: serde_json::Value = self
+            .http
             .post(url)
+            .timeout(std::time::Duration::from_secs(timeout_secs + 10))
             .json(&serde_json::Value::Object(body))
             .send()
             .await
@@ -453,12 +464,14 @@ impl TgClient {
         file_id: &str,
         dest: &std::path::Path,
     ) -> Result<u64, TgClientError> {
+        use tokio::io::AsyncWriteExt;
+
         // 1) getFile to learn the path. Leading `/` mirrors the Task 13
         // construction so `bot12345:...` is not misread as a URI scheme;
         // `GetFile` casing matches teloxide's method-URL convention.
         let get_file_url = self.api_base.join(&format!("/bot{}/GetFile", self.token))?;
-        let client = reqwest::Client::new();
-        let resp: serde_json::Value = client
+        let resp: serde_json::Value = self
+            .http
             .post(get_file_url)
             .json(&serde_json::json!({ "file_id": file_id }))
             .send()
@@ -482,7 +495,8 @@ impl TgClient {
         let dl_url = self
             .api_base
             .join(&format!("/file/bot{}/{}", self.token, file_path))?;
-        let mut resp = client
+        let mut resp = self
+            .http
             .get(dl_url)
             .send()
             .await
@@ -497,12 +511,16 @@ impl TgClient {
             .map_err(|e| TgClientError::Download(e.to_string()))?;
         let mut total = 0_u64;
         while let Some(chunk) = resp.chunk().await.map_err(redact_reqwest_err)? {
-            use tokio::io::AsyncWriteExt;
             file.write_all(&chunk)
                 .await
                 .map_err(|e| TgClientError::Download(e.to_string()))?;
             total += chunk.len() as u64;
         }
+        // `tokio::fs::File` buffers writes; flush so the bytes are on disk
+        // before we return (a plain drop can lose the tail of the file).
+        file.flush()
+            .await
+            .map_err(|e| TgClientError::Download(e.to_string()))?;
         Ok(total)
     }
 }
@@ -533,7 +551,9 @@ fn map_teloxide_err(e: teloxide::RequestError) -> TgClientError {
 }
 
 fn api_code(_e: &teloxide::ApiError) -> i32 {
-    // teloxide doesn't expose the numeric code on every variant; pick a stable
-    // sentinel for non-rate-limit API errors so the LLM has something to match.
-    0
+    // teloxide doesn't expose the numeric code on its `ApiError` variants.
+    // Return the same `-1` "unknown code" sentinel `get_updates_raw` uses for
+    // synthetic API errors, so the LLM sees one consistent value rather than
+    // a misleading `0` (not a real Telegram error code).
+    -1
 }

@@ -11,6 +11,7 @@
 mod auth;
 pub mod discovery;
 pub mod process;
+mod security;
 pub mod server;
 
 pub use discovery::DiscoveryRecord;

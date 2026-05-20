@@ -6,11 +6,16 @@
 
 use crate::auth::{AuthError, consume_auth_line};
 use crate::discovery::{self, DiscoveryRecord};
+use crate::security::PipeSecurity;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+
+/// Upper bound on the pipe create/connect retry backoff, in seconds.
+const MAX_BACKOFF_SECS: u64 = 30;
 
 /// Errors surfaced by [`run_pipe_server`].
 #[derive(Debug, Error)]
@@ -32,15 +37,26 @@ pub type ConnHandler =
 /// file, and accepts connections. Each authenticated connection is handed
 /// to `handler`.
 ///
+/// The pipe is created with `first_pipe_instance` on the first instance (so
+/// a squatter cannot pre-create the name), `reject_remote_clients` (so SMB
+/// remote clients are refused), and — when it can be built — a DACL
+/// restricting access to the current user.
+///
 /// The discovery file is removed when the returned future is dropped
 /// (via the inner RAII guard).
+///
+/// # Errors
+///
+/// Returns [`PipeError::Io`] if the discovery file cannot be written, or if
+/// the *first* pipe instance cannot be created — the latter means another
+/// process already owns the pipe name (a squatter or a stale instance).
 #[allow(
     clippy::similar_names,
     reason = "pid/ppid are standard OS terminology; renaming obscures intent"
 )]
 pub async fn run_pipe_server(handler: ConnHandler) -> Result<(), PipeError> {
     let pid = std::process::id();
-    let ppid = parent_pid();
+    let ppid = crate::process::parent_pid();
     let pipe_path = format!(r"\\.\pipe\telegrammcp-{pid}");
     let token = uuid::Uuid::new_v4().simple().to_string();
     let session_id = std::env::var("CLAUDE_SESSION_ID").ok();
@@ -56,25 +72,48 @@ pub async fn run_pipe_server(handler: ConnHandler) -> Result<(), PipeError> {
     discovery::write(&record)?;
     let _guard = DiscoveryGuard(pid);
 
-    tracing::debug!(pipe = %pipe_path, ppid, "local-pipe server listening");
+    // Restrict the pipe DACL to the current user. If the descriptor can't be
+    // built we fall back to the process token's default DACL.
+    let security = PipeSecurity::current_user_only();
+    if security.is_none() {
+        tracing::warn!("could not build restrictive pipe ACL; using default descriptor");
+    }
+
+    tracing::debug!(
+        pipe = %pipe_path,
+        ppid,
+        secured = security.is_some(),
+        "local-pipe server listening"
+    );
 
     // Accept loop. Each connection: spawn a task that auth's + invokes handler.
     let token_for_loop = Arc::new(token);
+    let mut first = true;
     let mut consecutive_failures = 0u32;
     loop {
-        let server = match build_server(&pipe_path) {
-            Ok(s) => s,
+        let server = match build_server(&pipe_path, first, security.as_ref()) {
+            Ok(s) => {
+                consecutive_failures = 0;
+                s
+            }
+            Err(e) if first => {
+                // The first instance must claim the pipe name exclusively.
+                // A failure here means another process already owns it —
+                // surface it instead of looping.
+                tracing::error!(
+                    error = %e,
+                    pipe = %pipe_path,
+                    "could not claim pipe name (squatted or stale instance?)"
+                );
+                return Err(PipeError::Io(e));
+            }
             Err(e) => {
-                consecutive_failures = consecutive_failures.saturating_add(1);
-                tracing::warn!(error = %e, attempt = consecutive_failures, "pipe instance create failed");
-                // Exponential-ish backoff capped at 30s so a misconfigured
-                // pipe can't tight-loop and DOS the host with errors.
-                let delay =
-                    std::time::Duration::from_secs((1u64 << consecutive_failures.min(5)).min(30));
-                tokio::time::sleep(delay).await;
+                tracing::warn!(error = %e, "pipe instance create failed");
+                backoff_sleep(&mut consecutive_failures).await;
                 continue;
             }
         };
+        first = false;
 
         match server.connect().await {
             Ok(()) => {
@@ -94,18 +133,51 @@ pub async fn run_pipe_server(handler: ConnHandler) -> Result<(), PipeError> {
                 });
             }
             Err(e) => {
-                consecutive_failures = consecutive_failures.saturating_add(1);
-                tracing::warn!(error = %e, attempt = consecutive_failures, "pipe connect() failed");
-                let delay =
-                    std::time::Duration::from_secs((1u64 << consecutive_failures.min(5)).min(30));
-                tokio::time::sleep(delay).await;
+                tracing::warn!(error = %e, "pipe connect() failed");
+                backoff_sleep(&mut consecutive_failures).await;
             }
         }
     }
 }
 
-fn build_server(path: &str) -> std::io::Result<NamedPipeServer> {
-    ServerOptions::new().create(path)
+/// Create one pipe-server instance.
+///
+/// `first` claims the name exclusively via `first_pipe_instance`; it must be
+/// set only on the very first instance. `security`, when present, restricts
+/// the pipe DACL to the current user.
+fn build_server(
+    path: &str,
+    first: bool,
+    security: Option<&PipeSecurity>,
+) -> std::io::Result<NamedPipeServer> {
+    let mut opts = ServerOptions::new();
+    opts.reject_remote_clients(true);
+    if first {
+        opts.first_pipe_instance(true);
+    }
+    match security {
+        Some(sec) => {
+            let mut attrs = sec.attributes();
+            // SAFETY: `attrs` lives across the call, and the descriptor it
+            // points at is owned by `sec` and valid for `sec`'s lifetime.
+            unsafe { opts.create_with_security_attributes_raw(path, attrs.as_mut_ptr()) }
+        }
+        None => opts.create(path),
+    }
+}
+
+/// Sleep with exponential-ish backoff (1s doubling, capped at
+/// [`MAX_BACKOFF_SECS`]), bumping the consecutive-failure counter that drives
+/// it. Keeps a misconfigured pipe from tight-looping and flooding the host.
+async fn backoff_sleep(consecutive_failures: &mut u32) {
+    *consecutive_failures = consecutive_failures.saturating_add(1);
+    let secs = (1u64 << (*consecutive_failures).min(5)).min(MAX_BACKOFF_SECS);
+    tracing::warn!(
+        attempt = *consecutive_failures,
+        backoff_secs = secs,
+        "pipe server backing off"
+    );
+    tokio::time::sleep(Duration::from_secs(secs)).await;
 }
 
 #[allow(
@@ -149,14 +221,25 @@ fn epoch_to_civil(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
     (y, m, d, hour, min, sec)
 }
 
-fn parent_pid() -> u32 {
-    crate::process::parent_pid()
-}
-
 /// RAII guard that removes the discovery file when dropped.
 struct DiscoveryGuard(u32);
 impl Drop for DiscoveryGuard {
     fn drop(&mut self) {
         discovery::remove(self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::epoch_to_civil;
+
+    #[test]
+    fn epoch_to_civil_known_values() {
+        assert_eq!(epoch_to_civil(0), (1970, 1, 1, 0, 0, 0));
+        assert_eq!(epoch_to_civil(1_700_000_000), (2023, 11, 14, 22, 13, 20));
+        // A leap day: 2020-02-29 00:00:00 UTC.
+        assert_eq!(epoch_to_civil(1_582_934_400), (2020, 2, 29, 0, 0, 0));
+        // End of day, last second.
+        assert_eq!(epoch_to_civil(86_399), (1970, 1, 1, 23, 59, 59));
     }
 }

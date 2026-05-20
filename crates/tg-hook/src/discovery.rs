@@ -19,8 +19,13 @@ pub fn load_all() -> std::io::Result<Vec<DiscoveryRecord>> {
     for entry in std::fs::read_dir(&dir)? {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
-        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
         let Ok(rec) = serde_json::from_slice::<DiscoveryRecord>(&bytes) else {
+            // Unparseable: either half-written or an incompatible older
+            // format. Remove it so a permanently-corrupt file doesn't linger.
+            let _ = std::fs::remove_file(&path);
             continue;
         };
         if process_alive(rec.pid) {

@@ -31,12 +31,7 @@ pub fn map_update(update: &Value) -> Option<(ChatInfo, StoredMessage)> {
         .get("title")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| {
-            let first = chat.get("first_name").and_then(Value::as_str).unwrap_or("");
-            let last = chat.get("last_name").and_then(Value::as_str).unwrap_or("");
-            let combined = format!("{first} {last}").trim().to_string();
-            (!combined.is_empty()).then_some(combined)
-        });
+        .or_else(|| full_name(chat));
     let username = chat
         .get("username")
         .and_then(Value::as_str)
@@ -46,12 +41,7 @@ pub fn map_update(update: &Value) -> Option<(ChatInfo, StoredMessage)> {
     let date = msg.get("date")?.as_i64()?;
     let from = msg.get("from");
     let from_id = from.and_then(|f| f.get("id")).and_then(Value::as_i64);
-    let from_name = from.and_then(|f| {
-        let first = f.get("first_name").and_then(Value::as_str).unwrap_or("");
-        let last = f.get("last_name").and_then(Value::as_str).unwrap_or("");
-        let combined = format!("{first} {last}").trim().to_string();
-        (!combined.is_empty()).then_some(combined)
-    });
+    let from_name = from.and_then(full_name);
     let reply_to = msg
         .get("reply_to_message")
         .and_then(|r| r.get("message_id"))
@@ -87,6 +77,16 @@ pub fn map_update(update: &Value) -> Option<(ChatInfo, StoredMessage)> {
         raw: update.clone(),
     };
     Some((chat_info, stored))
+}
+
+/// Combine `first_name` + `last_name` from a JSON object (a `chat` or a
+/// `from`) into a display name, returning `None` when both are absent/empty.
+fn full_name(obj: &Value) -> Option<String> {
+    let first = obj.get("first_name").and_then(Value::as_str).unwrap_or("");
+    let last = obj.get("last_name").and_then(Value::as_str).unwrap_or("");
+    let combined = format!("{first} {last}");
+    let trimmed = combined.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn extract_media(msg: &Value) -> (Option<String>, Option<String>, Option<Value>) {

@@ -84,3 +84,22 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     }
     diff == 0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_matches_equal_inputs() {
+        assert!(constant_time_eq(b"deadbeef", b"deadbeef"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_differences() {
+        assert!(!constant_time_eq(b"deadbeef", b"deadbee0")); // same length, last byte differs
+        assert!(!constant_time_eq(b"deadbeef", b"deadbee")); // length mismatch
+        assert!(!constant_time_eq(b"short", b"longer-token"));
+        assert!(!constant_time_eq(b"abc", b""));
+    }
+}

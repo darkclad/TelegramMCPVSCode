@@ -5,6 +5,7 @@
 
 pub mod cli;
 pub mod discovery;
+pub mod local_input;
 pub mod mcp_client;
 pub mod output;
 pub mod poll;

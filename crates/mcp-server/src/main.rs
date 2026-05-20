@@ -51,6 +51,8 @@ struct State {
     aliases: Aliases,
     /// Resolved allow-list for send tools. `None` means unrestricted.
     allowed_send_targets: Option<Vec<i64>>,
+    /// Optional root the file tools are confined to. `None` = unrestricted.
+    file_root: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for State {
@@ -58,6 +60,7 @@ impl std::fmt::Debug for State {
         f.debug_struct("State")
             .field("bot", &self.bot)
             .field("allowed_send_targets", &self.allowed_send_targets)
+            .field("file_root", &self.file_root)
             .finish_non_exhaustive()
     }
 }
@@ -122,6 +125,84 @@ fn check_send_allowed(state: &State, chat_id: i64) -> Result<(), McpError> {
         }
     }
     Ok(())
+}
+
+/// Validate and resolve a caller-supplied filesystem path for a file tool
+/// (`download`, `send_photo`, `send_document`).
+///
+/// A path containing a `..` component is always rejected — a confused or
+/// prompt-injected LLM should not be able to traverse out of an intended
+/// directory. When `file_root` is configured, the path must additionally be
+/// relative, and is resolved against that root; absolute paths are refused.
+/// When `file_root` is `None` the path is returned unchanged (the `..`
+/// rejection still applies).
+fn resolve_file_path(
+    path: &std::path::Path,
+    file_root: Option<&std::path::Path>,
+) -> Result<PathBuf, McpError> {
+    use std::path::Component;
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(McpError::invalid_params(
+            format!("path must not contain '..': {}", path.display()),
+            None,
+        ));
+    }
+    match file_root {
+        None => Ok(path.to_path_buf()),
+        Some(root) => {
+            if path.is_absolute() {
+                Err(McpError::invalid_params(
+                    format!(
+                        "access.file_root is configured; file paths must be relative to it, \
+                         got absolute path: {}",
+                        path.display()
+                    ),
+                    None,
+                ))
+            } else {
+                Ok(root.join(path))
+            }
+        }
+    }
+}
+
+/// Periodic history pruning. Every 6 hours, applies the configured age-based
+/// and per-chat retention limits. Runs forever; spawned only when at least
+/// one limit is set.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    reason = "unix timestamps and day counts comfortably fit in i64"
+)]
+async fn run_retention(store: History, cfg: config::RetentionConfig) {
+    const INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+    const SECS_PER_DAY: i64 = 86_400;
+    let mut tick = tokio::time::interval(INTERVAL);
+    loop {
+        tick.tick().await;
+        if let Some(days) = cfg.max_age_days {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()) as i64;
+            let cutoff = now - days as i64 * SECS_PER_DAY;
+            match store.trim_older_than(cutoff).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!(removed = n, cutoff, "retention: pruned old messages");
+                }
+                Ok(_) => {}
+                Err(e) => tracing::error!(error = %e, "retention: trim_older_than failed"),
+            }
+        }
+        if let Some(keep) = cfg.max_messages_per_chat {
+            match store.trim_per_chat_to(keep).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!(removed = n, keep, "retention: pruned overflow messages");
+                }
+                Ok(_) => {}
+                Err(e) => tracing::error!(error = %e, "retention: trim_per_chat_to failed"),
+            }
+        }
+    }
 }
 
 /// Map a user-supplied `parse_mode` string to teloxide's [`ParseMode`].
@@ -415,11 +496,12 @@ impl ServerHandler for Server {
                 let input: SendPhotoInput = parse_args(request.arguments.as_ref())?;
                 let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
                 check_send_allowed(&self.0, chat_id)?;
+                let path = resolve_file_path(&input.path, self.0.file_root.as_deref())?;
                 let pm = decode_parse_mode(input.parse_mode.as_deref())?;
                 let sent = self
                     .0
                     .bot
-                    .send_photo_path(chat_id, &input.path, input.caption.as_deref(), pm)
+                    .send_photo_path(chat_id, &path, input.caption.as_deref(), pm)
                     .await
                     .map_err(|e| client_err_to_mcp(&e))?;
                 mirror_outbound(
@@ -440,12 +522,13 @@ impl ServerHandler for Server {
                 let input: SendDocumentInput = parse_args(request.arguments.as_ref())?;
                 let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
                 check_send_allowed(&self.0, chat_id)?;
+                let path = resolve_file_path(&input.path, self.0.file_root.as_deref())?;
                 let sent = self
                     .0
                     .bot
                     .send_document_path(
                         chat_id,
-                        &input.path,
+                        &path,
                         input.caption.as_deref(),
                         input.filename.as_deref(),
                     )
@@ -615,6 +698,7 @@ impl ServerHandler for Server {
             "tg_history_download" => {
                 let input: DownloadInput = parse_args(request.arguments.as_ref())?;
                 let chat_id = resolve_chat(&self.0.aliases, &input.chat)?;
+                let dest = resolve_file_path(&input.dest_path, self.0.file_root.as_deref())?;
                 let m = self
                     .0
                     .store
@@ -630,11 +714,11 @@ impl ServerHandler for Server {
                 let bytes = self
                     .0
                     .bot
-                    .download_file(file_id, &input.dest_path)
+                    .download_file(file_id, &dest)
                     .await
                     .map_err(|e| client_err_to_mcp(&e))?;
                 ok_json(&serde_json::json!({
-                    "dest_path": input.dest_path,
+                    "dest_path": dest,
                     "bytes": bytes,
                 }))
             }
@@ -733,7 +817,13 @@ async fn main() -> Result<()> {
         store: store.clone(),
         aliases,
         allowed_send_targets,
+        file_root: cfg.access.file_root.clone(),
     });
+
+    // Background retention pruning, if any limit is configured.
+    if cfg.retention.max_age_days.is_some() || cfg.retention.max_messages_per_chat.is_some() {
+        tokio::spawn(run_retention(state.store.clone(), cfg.retention.clone()));
+    }
 
     if cfg.updater.enabled {
         let allowed_chats = if cfg.access.allowed_chats.is_empty() {

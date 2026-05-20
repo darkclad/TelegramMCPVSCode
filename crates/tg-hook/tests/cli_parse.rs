@@ -17,6 +17,25 @@ fn parses_minimum_required() {
     assert_eq!(cli.timeout_secs, 3600);
     assert_eq!(cli.poll_secs, 5);
     assert_eq!(cli.retry_message.as_deref(), None);
+    assert!(!cli.release_on_local_input);
+    assert_eq!(cli.local_input_threshold_secs, 2);
+}
+
+#[test]
+fn parses_local_input_flags() {
+    let args = vec![
+        "tg-hook".to_string(),
+        "--chat".to_string(),
+        "me".to_string(),
+        "--message".to_string(),
+        "wake".to_string(),
+        "--release-on-local-input".to_string(),
+        "--local-input-threshold-secs".to_string(),
+        "5".to_string(),
+    ];
+    let cli = CliArgs::parse_from(args).expect("parses");
+    assert!(cli.release_on_local_input);
+    assert_eq!(cli.local_input_threshold_secs, 5);
 }
 
 #[test]

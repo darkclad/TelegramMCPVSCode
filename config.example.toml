@@ -21,8 +21,9 @@ allowed_update_kinds = [
 ]
 
 # [retention]
-# max_age_days = 365
-# max_messages_total = 1000000
+# Background pruning runs every 6 hours. Omit a key to disable that limit.
+# max_age_days = 365            # drop messages older than this
+# max_messages_per_chat = 50000 # keep only the newest N messages per chat
 
 [aliases]
 me = 12345678
@@ -34,3 +35,8 @@ alerts = -1001234567890
 allowed_chats = ["me", "alerts", "team-eng"]
 # Outbound: refuse tg_send_* targeting chats not in this list. Empty = unrestricted.
 allowed_send_targets = []
+# Confine the file tools (download, send_photo, send_document) to one
+# directory: when set, those tools accept only relative paths resolved
+# against it. Unset = unrestricted (paths containing `..` are always
+# rejected regardless).
+# file_root = "./files"

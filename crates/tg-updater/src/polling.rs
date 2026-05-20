@@ -76,16 +76,17 @@ impl Updater {
                 .unwrap_or(0),
         );
         let mut backoff = Duration::from_secs(1);
+        // `allowed_update_kinds` is fixed for the life of the loop; build the
+        // `&str` view once rather than every iteration.
         let kinds_owned: Vec<String> = self.config.allowed_update_kinds.clone();
+        let kinds_refs: Vec<&str> = kinds_owned.iter().map(String::as_str).collect();
+        let kinds_arg = if kinds_refs.is_empty() {
+            None
+        } else {
+            Some(kinds_refs.as_slice())
+        };
 
         loop {
-            let kinds_refs: Vec<&str> = kinds_owned.iter().map(String::as_str).collect();
-            let kinds_arg = if kinds_refs.is_empty() {
-                None
-            } else {
-                Some(kinds_refs.as_slice())
-            };
-
             let result = self
                 .client
                 .get_updates_raw(offset, self.config.poll_timeout_secs, kinds_arg)
@@ -109,12 +110,8 @@ impl Updater {
                                 continue;
                             }
                         }
-                        if let Err(e) = self.store.upsert_chat(&chat).await {
-                            tracing::error!(error = %e, "upsert_chat failed");
-                            continue;
-                        }
-                        if let Err(e) = self.store.insert_message(&msg).await {
-                            tracing::error!(error = %e, "insert_message failed");
+                        if let Err(e) = self.store.record_inbound(&chat, &msg).await {
+                            tracing::error!(error = %e, "record_inbound failed");
                         }
                     }
                     if let Some(m) = max_update_id {

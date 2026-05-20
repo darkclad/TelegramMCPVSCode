@@ -6,6 +6,10 @@ Cargo.lock.bak
 # Secrets and local config
 config.toml
 
+# Per-machine config (absolute install paths, deploy choices) — not portable
+.mcp.json
+.deploy-to-programs.json
+
 # Local SQLite store
 *.db
 *.db-wal

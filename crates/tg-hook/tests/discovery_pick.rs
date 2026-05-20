@@ -47,8 +47,22 @@ fn falls_back_to_ppid_chain_when_no_session_id() {
 }
 
 #[test]
-fn no_match_returns_none() {
+fn single_live_record_is_picked_as_last_resort() {
+    // Exactly one live server: even with no session/ppid match it must be
+    // ours — there is nothing else it could be.
     let records = vec![rec(100, 7777, Some("OTHER"))];
+    let pid_chain = vec![9999, 1];
+    let picked = pick_record(&records, Some("NOTPRESENT"), &pid_chain).expect("fallback");
+    assert_eq!(picked.pid, 100);
+}
+
+#[test]
+fn no_match_among_multiple_returns_none() {
+    // With more than one candidate and nothing matching, refuse to guess.
+    let records = vec![
+        rec(100, 7777, Some("OTHER")),
+        rec(200, 6666, Some("ALSO-OTHER")),
+    ];
     let pid_chain = vec![9999, 1];
     assert!(pick_record(&records, Some("NOTPRESENT"), &pid_chain).is_none());
 }

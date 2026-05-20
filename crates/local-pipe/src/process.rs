@@ -23,6 +23,23 @@ unsafe extern "system" {
     fn Process32NextW(snapshot: *mut core::ffi::c_void, entry: *mut ProcessEntry32) -> i32;
     fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
     fn OpenProcess(desired_access: u32, inherit_handle: i32, pid: u32) -> *mut core::ffi::c_void;
+    fn GetNamedPipeServerProcessId(pipe: *mut core::ffi::c_void, pid: *mut u32) -> i32;
+}
+
+/// Return the PID of the process serving the named pipe that `handle` is
+/// connected to, or `None` on any Win32 failure.
+///
+/// Used by `tg-hook` to confirm a pipe is served by the process named in its
+/// discovery record before speaking MCP over it.
+#[must_use]
+#[allow(
+    clippy::not_unsafe_ptr_arg_deref,
+    reason = "handle is an OS pipe handle passed by-value to a Win32 query; not dereferenced in Rust"
+)]
+pub fn named_pipe_server_pid(handle: std::os::windows::io::RawHandle) -> Option<u32> {
+    let mut pid: u32 = 0;
+    let ok = unsafe { GetNamedPipeServerProcessId(handle, &raw mut pid) };
+    (ok != 0).then_some(pid)
 }
 
 /// Return `true` if a process with `pid` is currently alive.

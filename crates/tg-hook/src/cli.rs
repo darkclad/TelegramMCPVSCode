@@ -20,6 +20,14 @@ pub struct CliArgs {
     /// History-poll interval. Default 5s — small enough for snappy reply
     /// pickup, large enough not to hammer `SQLite`.
     pub poll_secs: u64,
+    /// Release the hook when the local user is actively typing into the
+    /// Claude Code host window. Off by default — opt in with
+    /// `--release-on-local-input` in the hook command line.
+    pub release_on_local_input: bool,
+    /// How recent local input must be (seconds) to count as "user is at
+    /// the keyboard". Default 2s. Only consulted when
+    /// `release_on_local_input` is true.
+    pub local_input_threshold_secs: u64,
 }
 
 impl CliArgs {
@@ -35,6 +43,8 @@ impl CliArgs {
         let mut retry_message: Option<String> = None;
         let mut timeout_secs: u64 = 3600;
         let mut poll_secs: u64 = 5;
+        let mut release_on_local_input = false;
+        let mut local_input_threshold_secs: u64 = 2;
 
         let mut it = argv.into_iter().skip(1);
         while let Some(a) = it.next() {
@@ -71,10 +81,22 @@ impl CliArgs {
                         .ok_or_else(|| anyhow::anyhow!("--poll-secs needs a value"))?;
                     poll_secs = v.parse().map_err(|_| anyhow::anyhow!("bad --poll-secs"))?;
                 }
+                "--release-on-local-input" => {
+                    release_on_local_input = true;
+                }
+                "--local-input-threshold-secs" => {
+                    let v = it.next().ok_or_else(|| {
+                        anyhow::anyhow!("--local-input-threshold-secs needs a value")
+                    })?;
+                    local_input_threshold_secs = v
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("bad --local-input-threshold-secs"))?;
+                }
                 "--help" | "-h" => {
                     eprintln!(
                         "tg-hook --chat <alias> --message <text> \
-                         [--retry-message <text>] [--timeout-secs <int>] [--poll-secs <int>]"
+                         [--retry-message <text>] [--timeout-secs <int>] [--poll-secs <int>] \
+                         [--release-on-local-input] [--local-input-threshold-secs <int>]"
                     );
                     std::process::exit(0);
                 }
@@ -89,6 +111,8 @@ impl CliArgs {
             retry_message,
             timeout_secs,
             poll_secs,
+            release_on_local_input,
+            local_input_threshold_secs,
         })
     }
 
