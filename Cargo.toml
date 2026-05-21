@@ -8,7 +8,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["TelegramMCP authors"]
 rust-version = "1.85"
-repository = "https://example.invalid/TelegramMCP"
+repository = "https://github.com/darkclad/TelegramMCPVSCode"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
