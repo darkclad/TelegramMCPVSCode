@@ -56,42 +56,82 @@ pub fn process_alive(pid: u32) -> bool {
 
 const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
 
-/// Walk the current process's ancestry, returning `[parent, grandparent, …]`
-/// PIDs. Caps at 32 hops so a corrupt snapshot cannot produce an infinite
-/// loop. Returns an empty `Vec` on any Win32 failure.
+/// Parent PID + lowercased executable name for one process in a snapshot.
+#[derive(Debug, Clone)]
+pub struct ProcInfo {
+    /// Parent process id.
+    pub parent: u32,
+    /// Lowercased executable file name, e.g. `code.exe`.
+    pub exe: String,
+}
+
+/// Decode a NUL-terminated UTF-16 `sz_exe_file` buffer into a lowercased name.
+fn exe_name(buf: &[u16; 260]) -> String {
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..len]).to_lowercase()
+}
+
+/// Snapshot every running process as `pid -> ProcInfo` (parent PID + exe
+/// name). Returns an empty map on any Win32 failure.
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "dw_size is always small; isize cast is the canonical Win32 INVALID_HANDLE_VALUE check"
+    reason = "dw_size is always small; the u32 cast cannot lose data"
 )]
 #[allow(
     clippy::cast_possible_wrap,
     reason = "isize comparison with -1 is the canonical Win32 INVALID_HANDLE_VALUE check"
 )]
-pub fn pid_ancestry_chain() -> Vec<u32> {
+pub fn process_snapshot() -> std::collections::HashMap<u32, ProcInfo> {
+    let mut map = std::collections::HashMap::new();
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot.is_null() || snapshot as isize == -1 {
-        return Vec::new();
+        return map;
     }
-
     let mut entry: ProcessEntry32 = unsafe { std::mem::zeroed() };
     entry.dw_size = size_of::<ProcessEntry32>() as u32;
-    let mut map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
     let mut ok = unsafe { Process32FirstW(snapshot, &raw mut entry) };
     while ok != 0 {
-        map.insert(entry.th32_process_id, entry.th32_parent_process_id);
+        map.insert(
+            entry.th32_process_id,
+            ProcInfo {
+                parent: entry.th32_parent_process_id,
+                exe: exe_name(&entry.sz_exe_file),
+            },
+        );
         ok = unsafe { Process32NextW(snapshot, &raw mut entry) };
     }
     unsafe { CloseHandle(snapshot) };
+    map
+}
 
-    let mut chain = Vec::new();
-    let mut cur = std::process::id();
+/// Walk `pid`'s ancestry within `snap`, returning `[pid, parent, grandparent,
+/// …]` with the start `pid` included. Caps at 32 hops and stops on a cycle so
+/// a corrupt snapshot cannot loop forever.
+pub fn ancestry_in<S: std::hash::BuildHasher>(
+    snap: &std::collections::HashMap<u32, ProcInfo, S>,
+    pid: u32,
+) -> Vec<u32> {
+    let mut chain = vec![pid];
+    let mut cur = pid;
     for _ in 0..32 {
-        let Some(&ppid) = map.get(&cur) else { break };
-        if ppid == 0 || ppid == cur {
+        let Some(info) = snap.get(&cur) else { break };
+        let parent = info.parent;
+        if parent == 0 || parent == cur || chain.contains(&parent) {
             break;
         }
-        chain.push(ppid);
-        cur = ppid;
+        chain.push(parent);
+        cur = parent;
+    }
+    chain
+}
+
+/// Walk the current process's ancestry, returning `[parent, grandparent, …]`
+/// PIDs (the current process itself is excluded). Empty on Win32 failure.
+pub fn pid_ancestry_chain() -> Vec<u32> {
+    let snap = process_snapshot();
+    let mut chain = ancestry_in(&snap, std::process::id());
+    if !chain.is_empty() {
+        chain.remove(0);
     }
     chain
 }

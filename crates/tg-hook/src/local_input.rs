@@ -3,12 +3,21 @@
 //! local activity in addition to a Telegram reply.
 //!
 //! Strategy: `GetLastInputInfo` reports system-wide input recency, which is
-//! noisy on its own — moving the mouse over a browser shouldn't release
-//! the hook. We pair it with `GetForegroundWindow` and require the
-//! foreground PID to belong to the hook's ancestor chain (terminal,
-//! Claude Code, etc.). Together that means "input happened *and* the user
-//! is looking at the window we care about".
+//! noisy on its own — moving the mouse over a browser shouldn't release the
+//! hook. We pair it with `GetForegroundWindow` and require the focused
+//! window to belong to the *same host application* as the hook.
+//!
+//! "Same application" is decided by process ancestry, not a single PID: the
+//! hook and the window the user looks at are often different processes of
+//! one app. A terminal Claude Code spawns the hook under the terminal
+//! window's process. The VS Code extension is multi-process — the focused
+//! editor window and the extension host that spawned the hook are sibling
+//! `Code.exe` processes under a shared VS Code main process. So we find the
+//! nearest common ancestor of the focused window and the hook, and treat the
+//! user as present unless that ancestor is just the OS shell.
 
+use local_pipe::{ProcInfo, ancestry_in, process_snapshot};
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -58,10 +67,10 @@ fn foreground_pid() -> u32 {
 }
 
 /// Return `true` when system input has occurred within `threshold_millis`
-/// *and* the foreground window belongs to a process in `allowed_pids`
-/// (typically the hook's ancestor chain). The PID gate is what keeps a
-/// stray mouse jiggle on an unrelated window from releasing the hook.
-pub fn local_user_active(threshold_millis: u32, allowed_pids: &[u32]) -> bool {
+/// *and* the focused window belongs to the same host application as the
+/// hook (see [`focused_window_is_host`]). `host_pids` is the hook's ancestor
+/// PID chain.
+pub fn local_user_active(threshold_millis: u32, host_pids: &[u32]) -> bool {
     let Some(elapsed) = millis_since_input() else {
         return false;
     };
@@ -69,5 +78,143 @@ pub fn local_user_active(threshold_millis: u32, allowed_pids: &[u32]) -> bool {
         return false;
     }
     let fg = foreground_pid();
-    fg != 0 && allowed_pids.contains(&fg)
+    if fg == 0 {
+        return false;
+    }
+    focused_window_is_host(fg, host_pids, &process_snapshot())
+}
+
+/// Decide whether the window owned by `fg_pid` belongs to the same host
+/// application as the hook, whose ancestor PIDs are `host_pids`.
+///
+/// Walks the focused window's ancestry outward and takes the first process
+/// that is also a hook ancestor — their nearest common ancestor. The window
+/// counts as "the host" unless that ancestor is a generic OS process (the
+/// shell or a service host), which is all an *unrelated* app would share
+/// with the hook.
+fn focused_window_is_host(fg_pid: u32, host_pids: &[u32], snap: &HashMap<u32, ProcInfo>) -> bool {
+    for pid in ancestry_in(snap, fg_pid) {
+        if host_pids.contains(&pid) {
+            return !is_generic_ancestor(snap, pid);
+        }
+    }
+    false
+}
+
+/// `true` for processes that unrelated applications share as a common
+/// ancestor — the OS shell, service hosts, the system root. A nearest common
+/// ancestor landing here means the focused window is a *different*
+/// application, not the Claude Code host.
+fn is_generic_ancestor(snap: &HashMap<u32, ProcInfo>, pid: u32) -> bool {
+    if pid <= 4 {
+        return true; // System Idle Process / System
+    }
+    match snap.get(&pid) {
+        None => true,
+        Some(info) => matches!(
+            info.exe.as_str(),
+            "explorer.exe"
+                | "svchost.exe"
+                | "services.exe"
+                | "wininit.exe"
+                | "winlogon.exe"
+                | "userinit.exe"
+                | "runtimebroker.exe"
+                | ""
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proc(parent: u32, exe: &str) -> ProcInfo {
+        ProcInfo {
+            parent,
+            exe: exe.to_string(),
+        }
+    }
+
+    /// A VS Code-extension process tree:
+    /// ```text
+    ///   4   System
+    ///   100 explorer.exe        (parent 4)
+    ///   200 code.exe            (VS Code main,        parent 100)
+    ///   210 code.exe            (focused renderer,   parent 200)
+    ///   220 code.exe            (extension host,     parent 200)
+    ///   230 cmd.exe             (the .bat wrapper,   parent 220)
+    ///   240 tg-hook.exe         (the hook,           parent 230)
+    ///   300 firefox.exe         (unrelated app,      parent 100)
+    /// ```
+    fn vscode_snapshot() -> HashMap<u32, ProcInfo> {
+        HashMap::from([
+            (4, proc(0, "system")),
+            (100, proc(4, "explorer.exe")),
+            (200, proc(100, "code.exe")),
+            (210, proc(200, "code.exe")),
+            (220, proc(200, "code.exe")),
+            (230, proc(220, "cmd.exe")),
+            (240, proc(230, "tg-hook.exe")),
+            (300, proc(100, "firefox.exe")),
+        ])
+    }
+
+    /// The hook's ancestor chain (excludes the hook itself, pid 240).
+    fn hook_chain() -> Vec<u32> {
+        vec![230, 220, 200, 100, 4]
+    }
+
+    #[test]
+    fn focused_vscode_window_counts_as_host() {
+        // Renderer (210) and the hook share VS Code main (200) — not generic.
+        assert!(focused_window_is_host(
+            210,
+            &hook_chain(),
+            &vscode_snapshot()
+        ));
+    }
+
+    #[test]
+    fn focused_unrelated_app_is_not_host() {
+        // Firefox (300) shares only explorer.exe with the hook.
+        assert!(!focused_window_is_host(
+            300,
+            &hook_chain(),
+            &vscode_snapshot()
+        ));
+    }
+
+    #[test]
+    fn focused_explorer_window_is_not_host() {
+        assert!(!focused_window_is_host(
+            100,
+            &hook_chain(),
+            &vscode_snapshot()
+        ));
+    }
+
+    #[test]
+    fn terminal_window_in_hook_chain_counts_as_host() {
+        // Terminal Claude Code: the focused terminal window *is* an ancestor
+        // of the hook.
+        let snap = HashMap::from([
+            (4, proc(0, "system")),
+            (100, proc(4, "explorer.exe")),
+            (500, proc(100, "windowsterminal.exe")),
+            (510, proc(500, "powershell.exe")),
+            (520, proc(510, "tg-hook.exe")),
+        ]);
+        let chain = vec![510, 500, 100, 4];
+        assert!(focused_window_is_host(500, &chain, &snap));
+    }
+
+    #[test]
+    fn unknown_foreground_pid_is_not_host() {
+        assert!(!focused_window_is_host(
+            9999,
+            &hook_chain(),
+            &vscode_snapshot()
+        ));
+    }
 }

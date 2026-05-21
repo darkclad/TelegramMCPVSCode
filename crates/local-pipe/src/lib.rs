@@ -15,5 +15,5 @@ mod security;
 pub mod server;
 
 pub use discovery::DiscoveryRecord;
-pub use process::{pid_ancestry_chain, process_alive};
+pub use process::{ProcInfo, ancestry_in, pid_ancestry_chain, process_alive, process_snapshot};
 pub use server::{ConnHandler, PipeError, run_pipe_server};
