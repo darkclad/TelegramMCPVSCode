@@ -57,19 +57,21 @@ pub async fn send_response_chunks(client: &mut McpClient, chat: &str, text: &str
     }
 }
 
+/// Send a one-off informational message to Telegram, ignoring any failure.
+/// A transient send error must never derail the caller (the poll loop, or a
+/// release that is about to hand control back to Claude Code).
+pub async fn send_notice(client: &mut McpClient, chat: &str, text: &str) {
+    let _ = client
+        .call_tool("tg_send_message", json!({ "chat": chat, "text": text }))
+        .await;
+}
+
 /// Send a brief acknowledgement back to the user in Telegram.
 ///
 /// Called right after detecting an inbound reply, before returning the block
 /// decision, so the user has immediate feedback that Claude saw their message.
-/// Errors are intentionally swallowed — the block decision must go through
-/// even if the ack fails.
 pub async fn send_ack(client: &mut McpClient, chat: &str) {
-    let _ = client
-        .call_tool(
-            "tg_send_message",
-            json!({ "chat": chat, "text": DEFAULT_ACK_MESSAGE }),
-        )
-        .await;
+    send_notice(client, chat, DEFAULT_ACK_MESSAGE).await;
 }
 
 /// Call `tg_send_message` with the provided chat + text, return the

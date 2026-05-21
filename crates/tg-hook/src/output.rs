@@ -42,3 +42,13 @@ pub const DEFAULT_WAKEUP_MESSAGE: &str =
 /// Acknowledgement sent to Telegram the moment an inbound reply is detected,
 /// so the user sees that Claude received their message.
 pub const DEFAULT_ACK_MESSAGE: &str = "Got it, working on it...";
+
+/// Telegram notice sent when the `Stop` hook releases because the user
+/// returned to the computer (local input after the wakeup was already sent).
+pub const STOP_TAKEOVER_MESSAGE: &str =
+    "🖥️ You took over at the computer — Claude is waiting for you in VS Code.";
+
+/// Telegram notice sent when the `AskUserQuestion` hook releases because the
+/// user returned to the computer; the prompt is now an in-app VS Code dialog.
+pub const ASK_TAKEOVER_MESSAGE: &str =
+    "🖥️ You took over at the computer — answer the question in the VS Code dialog.";

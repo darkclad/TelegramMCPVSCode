@@ -18,12 +18,13 @@ use tg_hook::discovery::{load_all, pick_record, pid_chain};
 use tg_hook::local_input::local_user_active;
 use tg_hook::mcp_client::McpClient;
 use tg_hook::output::{
-    DEFAULT_RETRY_MESSAGE, DEFAULT_WAKEUP_MESSAGE, emit_block, emit_status, emit_tool_block,
+    ASK_TAKEOVER_MESSAGE, DEFAULT_RETRY_MESSAGE, DEFAULT_WAKEUP_MESSAGE, STOP_TAKEOVER_MESSAGE,
+    emit_block, emit_status, emit_tool_block,
 };
 use tg_hook::poll::poll_once;
 use tg_hook::question::QuestionSet;
 use tg_hook::stop_input::StopInput;
-use tg_hook::wake::{send_ack, send_response_chunks, send_wakeup};
+use tg_hook::wake::{send_ack, send_notice, send_response_chunks, send_wakeup};
 
 /// Poll interval for the local-input watcher — fast enough to release the
 /// hook promptly once the user starts typing into the Claude Code window.
@@ -148,6 +149,7 @@ async fn run_stop(cli: &CliArgs, input: &Value, chain: &[u32]) -> Result<()> {
             }
             _ = local_interval.tick(), if cli.release_on_local_input => {
                 if local_user_active(local_threshold_ms, chain) {
+                    send_notice(&mut client, &cli.chat, STOP_TAKEOVER_MESSAGE).await;
                     emit_status("tg-hook: local input detected, releasing Claude");
                     return Ok(());
                 }
@@ -249,6 +251,7 @@ async fn run_ask(cli: &CliArgs, input: &Value, chain: &[u32]) -> Result<()> {
             }
             _ = local_interval.tick(), if cli.release_on_local_input => {
                 if local_user_active(local_threshold_ms, chain) {
+                    send_notice(&mut client, &cli.chat, ASK_TAKEOVER_MESSAGE).await;
                     emit_status("tg-hook: local input — AskUserQuestion stays in-app");
                     return Ok(());
                 }
