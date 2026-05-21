@@ -40,7 +40,7 @@ Add to `~/.claude/settings.json` (or the workspace's `.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "D:\\Programs\\user\\TelegramMCP\\tg-hook.exe --chat me --message \"Claude finished. Reply on Telegram to continue.\" --retry-message \"Still waiting on you.\" --timeout-secs 3600 --poll-secs 5",
+            "command": "D:\\Programs\\user\\TelegramMCP\\tg-hook.exe --chat me --message \"Claude finished. Reply on Telegram to continue.\" --retry-message \"Still waiting on you.\" --timeout-secs 3600 --poll-secs 5 --release-on-local-input",
             "timeout": 3700
           }
         ]
@@ -52,7 +52,7 @@ Add to `~/.claude/settings.json` (or the workspace's `.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "D:\\Programs\\user\\TelegramMCP\\tg-hook.exe --chat me --timeout-secs 3600 --poll-secs 5",
+            "command": "D:\\Programs\\user\\TelegramMCP\\tg-hook.exe --chat me --timeout-secs 3600 --poll-secs 5 --release-on-local-input",
             "timeout": 3700
           }
         ]
@@ -67,6 +67,11 @@ The `Stop` hook bridges finished turns; the `PreToolUse` hook (matcher
 the option number(s). Both entries run the same binary, which picks its mode
 from the `hook_event_name` in stdin. `--message` is omitted from the
 `PreToolUse` entry: that mode builds its message from the question itself.
+
+`--release-on-local-input` makes the hook bow out when you're at the
+computer: it detects the focused Claude Code / VS Code window and lets the
+in-app flow run, routing to Telegram only when you're away. Omit it to
+always go through Telegram.
 
 `timeout` (seconds) must be larger than the hook's `--timeout-secs` or
 Claude Code will kill the hook before it can return.
@@ -119,9 +124,9 @@ crate owns one externally-visible concern:
   `tg-hook`) call a running server's tools without spawning a second one.
   Owns the per-instance pipe (hardened DACL + `first_pipe_instance`), the
   `AUTH <token>` handshake, and the discovery file. Owns `PipeError`.
-- **tg-hook** — binary. The Claude Code Stop hook (see *Binaries* above).
-  `anyhow` throughout — it is a binary, and its `lib.rs` exists only so the
-  integration tests can drive its modules.
+- **tg-hook** — binary. The Claude Code hook (Stop + PreToolUse; see
+  *Binaries* above). `anyhow` throughout — it is a binary, and its `lib.rs`
+  exists only so the integration tests can drive its modules.
 
 ### Critical conventions
 

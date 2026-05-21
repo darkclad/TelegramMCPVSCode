@@ -1,5 +1,6 @@
-//! Send the wakeup message and parse `message_id` from the
-//! `tg_send_message` response — used as the baseline for reply detection.
+//! Outbound Telegram senders for the hook: the wakeup (whose response
+//! yields the reply-detection baseline), chunked delivery of the last
+//! response, takeover notices, and acknowledgements.
 
 use crate::mcp_client::{McpClient, tool_result_text};
 use crate::output::DEFAULT_ACK_MESSAGE;
@@ -57,13 +58,13 @@ pub async fn send_response_chunks(client: &mut McpClient, chat: &str, text: &str
     }
 }
 
-/// Send a one-off informational message to Telegram, ignoring any failure.
-/// A transient send error must never derail the caller (the poll loop, or a
-/// release that is about to hand control back to Claude Code).
+/// Send a one-off informational message to Telegram. Bounded by a short
+/// timeout and ignores any failure: a slow or failed send must never derail
+/// the caller — the poll loop, or a release about to hand control back to
+/// Claude Code.
 pub async fn send_notice(client: &mut McpClient, chat: &str, text: &str) {
-    let _ = client
-        .call_tool("tg_send_message", json!({ "chat": chat, "text": text }))
-        .await;
+    let send = client.call_tool("tg_send_message", json!({ "chat": chat, "text": text }));
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send).await;
 }
 
 /// Send a brief acknowledgement back to the user in Telegram.

@@ -1,5 +1,6 @@
-//! Stop-hook output helpers: the final stdout JSON (consumed by Claude
-//! Code), and the in-flight stderr status line shown to the user.
+//! Hook output helpers: the `Stop` hook's stdout `block` JSON, the
+//! `AskUserQuestion` exit-2 tool block, in-flight stderr status lines, and
+//! the default message constants.
 
 use serde_json::json;
 use std::io::Write as _;
@@ -41,7 +42,7 @@ pub const DEFAULT_WAKEUP_MESSAGE: &str =
 
 /// Acknowledgement sent to Telegram the moment an inbound reply is detected,
 /// so the user sees that Claude received their message.
-pub const DEFAULT_ACK_MESSAGE: &str = "Got it, working on it...";
+pub(crate) const DEFAULT_ACK_MESSAGE: &str = "Got it, working on it...";
 
 /// Telegram notice sent when the `Stop` hook releases because the user
 /// returned to the computer (local input after the wakeup was already sent).

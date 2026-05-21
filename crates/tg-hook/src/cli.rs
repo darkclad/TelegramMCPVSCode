@@ -13,8 +13,8 @@ pub struct CliArgs {
     /// notice when omitted. The `AskUserQuestion` (`PreToolUse`) hook ignores
     /// this and builds its message from the question itself.
     pub message: Option<String>,
-    /// Optional text returned to Claude when the 60-minute timeout expires
-    /// with no reply. Defaults to a generic retry notice when omitted.
+    /// Optional text returned to Claude when the `--timeout-secs` wait
+    /// expires with no reply. Defaults to a generic retry notice when omitted.
     pub retry_message: Option<String>,
     /// How long to wait for a reply before returning the retry-message.
     /// Default 3600s (60 minutes), matching settings.json hook `timeout`.

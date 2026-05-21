@@ -6,7 +6,8 @@
 //! - `PreToolUse` (`AskUserQuestion`) — relay the question to Telegram and
 //!   block the tool with the user's reply.
 //!
-//! See module docs in `lib.rs` for the per-stage detail.
+//! See the `stop_input`, `question`, `wake`, and `poll` modules for the
+//! per-stage detail.
 
 #![cfg(windows)]
 
@@ -15,7 +16,7 @@ use serde_json::Value;
 use std::time::Duration;
 use tg_hook::cli::CliArgs;
 use tg_hook::discovery::{load_all, pick_record, pid_chain};
-use tg_hook::local_input::local_user_active;
+use tg_hook::local_input::LocalInputWatcher;
 use tg_hook::mcp_client::McpClient;
 use tg_hook::output::{
     ASK_TAKEOVER_MESSAGE, DEFAULT_RETRY_MESSAGE, DEFAULT_WAKEUP_MESSAGE, STOP_TAKEOVER_MESSAGE,
@@ -98,10 +99,11 @@ async fn run_stop(cli: &CliArgs, input: &Value, chain: &[u32]) -> Result<()> {
 
     let local_threshold_ms: u32 =
         u32::try_from(cli.local_input_threshold_secs.saturating_mul(1000)).unwrap_or(u32::MAX);
+    let mut watcher = LocalInputWatcher::new(chain.to_vec(), local_threshold_ms);
 
     // Early exit if the user is already at the keyboard — skip the Telegram
     // wakeup so we don't spam Telegram on every turn while they watch.
-    if cli.release_on_local_input && local_user_active(local_threshold_ms, chain) {
+    if cli.release_on_local_input && watcher.user_active() {
         emit_status("tg-hook: local input detected at startup, skipping Telegram wakeup");
         return Ok(());
     }
@@ -148,7 +150,7 @@ async fn run_stop(cli: &CliArgs, input: &Value, chain: &[u32]) -> Result<()> {
                 return Ok(());
             }
             _ = local_interval.tick(), if cli.release_on_local_input => {
-                if local_user_active(local_threshold_ms, chain) {
+                if watcher.user_active() {
                     send_notice(&mut client, &cli.chat, STOP_TAKEOVER_MESSAGE).await;
                     emit_status("tg-hook: local input detected, releasing Claude");
                     return Ok(());
@@ -210,9 +212,10 @@ async fn run_ask(cli: &CliArgs, input: &Value, chain: &[u32]) -> Result<()> {
 
     let local_threshold_ms: u32 =
         u32::try_from(cli.local_input_threshold_secs.saturating_mul(1000)).unwrap_or(u32::MAX);
+    let mut watcher = LocalInputWatcher::new(chain.to_vec(), local_threshold_ms);
 
     // User already at the keyboard → let the in-app dialog handle it.
-    if cli.release_on_local_input && local_user_active(local_threshold_ms, chain) {
+    if cli.release_on_local_input && watcher.user_active() {
         emit_status("tg-hook: local input at startup — AskUserQuestion stays in-app");
         return Ok(());
     }
@@ -250,7 +253,7 @@ async fn run_ask(cli: &CliArgs, input: &Value, chain: &[u32]) -> Result<()> {
                 return Ok(());
             }
             _ = local_interval.tick(), if cli.release_on_local_input => {
-                if local_user_active(local_threshold_ms, chain) {
+                if watcher.user_active() {
                     send_notice(&mut client, &cli.chat, ASK_TAKEOVER_MESSAGE).await;
                     emit_status("tg-hook: local input — AskUserQuestion stays in-app");
                     return Ok(());

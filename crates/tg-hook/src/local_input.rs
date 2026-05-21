@@ -66,22 +66,55 @@ fn foreground_pid() -> u32 {
     pid
 }
 
-/// Return `true` when system input has occurred within `threshold_millis`
-/// *and* the focused window belongs to the same host application as the
-/// hook (see [`focused_window_is_host`]). `host_pids` is the hook's ancestor
-/// PID chain.
-pub fn local_user_active(threshold_millis: u32, host_pids: &[u32]) -> bool {
-    let Some(elapsed) = millis_since_input() else {
-        return false;
-    };
-    if elapsed > threshold_millis {
-        return false;
+/// Watches for the local user becoming active at the Claude Code host
+/// window.
+///
+/// Caches the process snapshot across calls: a live PID's ancestry never
+/// changes, so a fresh snapshot is only needed when a window the cached
+/// snapshot doesn't know gains focus. The hook polls this every ~500ms for
+/// up to an hour, so reuse avoids thousands of full process-table walks.
+pub struct LocalInputWatcher {
+    /// The hook's ancestor PID chain — its "host application".
+    host_pids: Vec<u32>,
+    /// Input-recency threshold, in milliseconds.
+    threshold_millis: u32,
+    /// Cached process snapshot, reused while it still contains the focused
+    /// window's PID.
+    snapshot: HashMap<u32, ProcInfo>,
+}
+
+impl LocalInputWatcher {
+    /// Create a watcher for a hook whose ancestor chain is `host_pids`,
+    /// treating input within `threshold_millis` as "the user is present".
+    pub fn new(host_pids: Vec<u32>, threshold_millis: u32) -> Self {
+        Self {
+            host_pids,
+            threshold_millis,
+            snapshot: HashMap::new(),
+        }
     }
-    let fg = foreground_pid();
-    if fg == 0 {
-        return false;
+
+    /// Return `true` when system input has occurred within the threshold
+    /// *and* the focused window belongs to the same host application as the
+    /// hook (see [`focused_window_is_host`]).
+    pub fn user_active(&mut self) -> bool {
+        let Some(elapsed) = millis_since_input() else {
+            return false;
+        };
+        if elapsed > self.threshold_millis {
+            return false;
+        }
+        let fg = foreground_pid();
+        if fg == 0 {
+            return false;
+        }
+        // Re-snapshot only when the focused window is one the cached
+        // snapshot doesn't know — a live PID's ancestry never changes.
+        if !self.snapshot.contains_key(&fg) {
+            self.snapshot = process_snapshot();
+        }
+        focused_window_is_host(fg, &self.host_pids, &self.snapshot)
     }
-    focused_window_is_host(fg, host_pids, &process_snapshot())
 }
 
 /// Decide whether the window owned by `fg_pid` belongs to the same host

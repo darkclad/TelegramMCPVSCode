@@ -75,7 +75,7 @@ Workspace crates:
 - `tg-updater` — background `getUpdates` long-poller
 - `local-pipe` — Windows named-pipe IPC (lets local hooks call the server)
 - `mcp-server` — `rmcp`-backed binary that wires it all together
-- `tg-hook` — Claude Code Stop hook binary (Windows)
+- `tg-hook` — Claude Code hook binary: Stop + AskUserQuestion (Windows)
 
 ## Security model
 
